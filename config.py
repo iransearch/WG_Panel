@@ -23,7 +23,7 @@ class Config:
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    WG_CONF_PATH = os.environ.get("WIREGUARD_CONF_PATH", "/etc/wireguard/")
+    WG_CONF_PATH = os.environ.get("AMNEZIAWG_CONF_PATH", "/etc/amnezia/amneziawg/")
     API_KEY = os.environ.get("API_KEY", "")
     LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
     SECURE_COOKIES = bool(int(os.environ.get("SECURE_COOKIES", "0")))

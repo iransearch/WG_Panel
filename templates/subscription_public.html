@@ -83,7 +83,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta id="browser-theme-color" name="theme-color" content="#07111f">
-    <title>{{ portal_title or sub.name }} — WireGuard</title>
+    <title>{{ portal_title or sub.name }} — AmneziaWG</title>
     <script>
       (() => { const root = document.documentElement; const configured = root.dataset.defaultTheme || 'auto'; const preview = root.dataset.preview === 'true'; let theme; if (preview) { theme = configured === 'light' ? 'light' : configured === 'dark' ? 'dark' : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } else { try { const saved = localStorage.getItem('sub-theme'); theme = saved === 'light' || saved === 'dark' ? saved : (configured === 'light' || configured === 'dark' ? configured : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')); } catch (_) { theme = configured === 'light' ? 'light' : 'dark'; } } root.dataset.theme = theme; root.style.colorScheme = theme; const meta = document.getElementById('browser-theme-color'); if (meta) meta.content = theme === 'light' ? '#eef5fb' : '#07111f'; })();
     </script>
@@ -233,10 +233,10 @@
           <div class="portal-id">
             <div class="portal-icon"><i class="{{ portal_icon|default('fas fa-bolt') }}"></i></div>
             <div class="portal-copy">
-              <div class="portal-meta"><span class="portal-label">{{ portal_label|default('Secure WireGuard portal')
+              <div class="portal-meta"><span class="portal-label">{{ portal_label|default('Secure AmneziaWG portal')
                   }}</span><span class="hero-live"><i class="fas fa-circle"></i> Live</span></div>
               <h1 id="sub-name">{{ portal_title or sub.name }}</h1>
-              <p>{{ portal_subtitle|default('Your account is ready. Install WireGuard, then scan QR or import a
+              <p>{{ portal_subtitle|default('Your account is ready. Install AmneziaWG, then scan QR or import a
                 config.') }}</p>
             </div>
           </div>
@@ -299,16 +299,16 @@
           </section>
           <section class="install-card surface" data-module-key="install">
             <div>
-              <h2><i class="fas fa-mobile-screen-button"></i> {{ ps.get('install_title','Install WireGuard') }}</h2>
+              <h2><i class="fas fa-mobile-screen-button"></i> {{ ps.get('install_title','Install AmneziaWG') }}</h2>
               <p>Open the official app, then scan QR or import a config.</p>
             </div>
-            <div class="client-links"><a href="https://www.wireguard.com/install/" target="_blank" rel="noopener"
+            <div class="client-links"><a href="https://amnezia.org/downloads" target="_blank" rel="noopener"
                 title="Desktop"><i class="fas fa-desktop"></i></a><a
-                href="https://apps.apple.com/app/wireguard/id1441195209" target="_blank" rel="noopener"
+                href="https://amnezia.org/downloads" target="_blank" rel="noopener"
                 title="iPhone / iPad"><i class="fab fa-apple"></i></a><a
-                href="https://play.google.com/store/apps/details?id=com.wireguard.android" target="_blank"
+                href="https://amnezia.org/downloads" target="_blank"
                 rel="noopener" title="Android"><i class="fab fa-android"></i></a><a
-                href="https://www.wireguard.com/install/" target="_blank" rel="noopener" title="All platforms"><i
+                href="https://amnezia.org/downloads" target="_blank" rel="noopener" title="All platforms"><i
                   class="fas fa-arrow-up-right-from-square"></i></a></div>
           </section>
           <section class="configs surface" id="configs-section" data-module-key="configs">
@@ -353,11 +353,11 @@
         aria-label="Close QR"></button>
       <section class="qr-sheet" role="dialog" aria-modal="true" aria-labelledby="qr-title">
         <header>
-          <div><span class="qr-icon"><i class="fas fa-qrcode"></i></span><span><b id="qr-title">WireGuard QR</b><small
-                id="qr-location">Scan with the WireGuard app</small></span></div><button data-close-qr
+          <div><span class="qr-icon"><i class="fas fa-qrcode"></i></span><span><b id="qr-title">AmneziaWG QR</b><small
+                id="qr-location">Scan with the AmneziaWG app</small></span></div><button data-close-qr
             aria-label="Close"><i class="fas fa-times"></i></button>
         </header>
-        <div class="qr-code-wrap"><img id="qr-image" alt="WireGuard QR code"></div>
+        <div class="qr-code-wrap"><img id="qr-image" alt="AmneziaWG QR code"></div>
         <footer><a class="qr-download" id="qr-download" href="#"><i class="fas fa-download"></i> Download
             config</a><button data-close-qr>Done</button></footer>
       </section>

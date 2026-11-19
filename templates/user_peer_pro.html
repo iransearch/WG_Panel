@@ -5,7 +5,7 @@
 <meta charset="utf-8"/>
 <meta content="width=device-width,initial-scale=1,viewport-fit=cover" name="viewport"/>
 <meta content="{{ token }}" name="user-token"/>
-<title>WireGuard Access · Pro</title>
+<title>AmneziaWG Access · Pro</title>
 <link href="{{ url_for('static', filename='vendor/fa/css/all.min.css') }}" rel="stylesheet"/>
 <link as="font" crossorigin="" href="{{ url_for('static', filename='fonts/Poppins-Regular.woff2') }}" rel="preload" type="font/woff2"/>
 <link as="font" crossorigin="" href="{{ url_for('static', filename='fonts/Poppins-SemiBold.woff2') }}" rel="preload" type="font/woff2"/>
@@ -30,7 +30,7 @@
 <div class="hero-topline">
 <div class="brand-lockup">
 <span class="brand-icon"><i class="fas fa-shield-halved"></i></span>
-<div><span class="eyebrow">Secure WireGuard profile</span><h1 id="peer-name">Loading…</h1></div>
+<div><span class="eyebrow">Secure AmneziaWG profile</span><h1 id="peer-name">Loading…</h1></div>
 </div>
 <span class="status-pill offline" id="peer-status"><span class="status-dot"></span><span id="peer-status-label">Loading</span></span>
 </div>
@@ -65,7 +65,7 @@
 </section>
 <section class="utility-grid"><section class="config-card glass-card">
 <div class="section-heading">
-<div><span class="section-kicker">Ready to connect</span><h2>WireGuard configuration</h2></div>
+<div><span class="section-kicker">Ready to connect</span><h2>AmneziaWG configuration</h2></div>
 <div class="config-actions">
 <a class="action-button primary" download="" id="download-config"><i class="fas fa-download"></i><span>Download</span></a>
 <button class="action-button" id="copy-config"><i class="fas fa-copy"></i><span>Copy</span></button>
@@ -74,27 +74,27 @@
 <div class="config-layout">
 <div aria-busy="true" aria-live="polite" class="qr-shell" id="config-qr"><div class="qr-loader"><i class="fas fa-spinner fa-spin"></i><span>Generating QR</span></div></div>
 <div class="connection-guide">
-<div class="guide-step"><span>1</span><div><strong>Mobile</strong><p>Open WireGuard and scan the QR code.</p></div></div>
+<div class="guide-step"><span>1</span><div><strong>Mobile</strong><p>Open AmneziaWG and scan the QR code.</p></div></div>
 <div class="guide-step"><span>2</span><div><strong>Desktop</strong><p>Download or copy the configuration and import it.</p></div></div>
 <div class="security-note"><i class="fas fa-lock"></i><span>Keep this configuration private. It contains your client key.</span></div>
 </div>
 </div>
 </section><section class="apps-card glass-card">
 <div class="section-heading compact-heading">
-<div><span class="section-kicker">Official clients</span><h2>Get the WireGuard app</h2></div>
+<div><span class="section-kicker">Official clients</span><h2>Get the AmneziaWG app</h2></div>
 <span class="section-icon"><i class="fas fa-download"></i></span>
 </div>
-<p class="apps-intro">Install the official WireGuard client, then scan the QR code or import the downloaded configuration.</p>
+<p class="apps-intro">Install the official AmneziaWG client, then scan the QR code or import the downloaded configuration.</p>
 <div class="app-grid">
-<a class="app-link" href="https://www.wireguard.com/install/" rel="noopener" target="_blank"><span class="app-icon"><i class="fas fa-mobile-screen-button"></i></span><span><strong>Mobile</strong><small>Android and iPhone/iPad</small></span><i class="fas fa-arrow-up-right-from-square"></i></a>
-<a class="app-link" href="https://www.wireguard.com/install/" rel="noopener" target="_blank"><span class="app-icon"><i class="fas fa-desktop"></i></span><span><strong>PC</strong><small>Windows, macOS and Linux</small></span><i class="fas fa-arrow-up-right-from-square"></i></a>
+<a class="app-link" href="https://amnezia.org/downloads" rel="noopener" target="_blank"><span class="app-icon"><i class="fas fa-mobile-screen-button"></i></span><span><strong>Mobile</strong><small>Android and iPhone/iPad</small></span><i class="fas fa-arrow-up-right-from-square"></i></a>
+<a class="app-link" href="https://amnezia.org/downloads" rel="noopener" target="_blank"><span class="app-icon"><i class="fas fa-desktop"></i></span><span><strong>PC</strong><small>Windows, macOS and Linux</small></span><i class="fas fa-arrow-up-right-from-square"></i></a>
 </div>
 </section><section class="support-card glass-card">
 <div class="section-heading compact-heading"><div><span class="section-kicker">Need assistance?</span><h2>Support</h2></div><span class="section-icon"><i class="fas fa-headset"></i></span></div>
 <div class="support-links" id="support-links"></div>
 </section></section>
 
-<footer class="page-footer"><i class="fas fa-shield-halved"></i><span>Encrypted access powered by WireGuard</span></footer>
+<footer class="page-footer"><i class="fas fa-shield-halved"></i><span>Encrypted access powered by AmneziaWG</span></footer>
 <div aria-live="polite" id="toast-container"></div>
 </main>
 <script>

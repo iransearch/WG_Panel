@@ -44,7 +44,7 @@
 <div class="quick-cards"><div class="quick-card"><div class="quick-icon"><i class="fa-solid fa-key"></i></div><h3>Access</h3><p>Use your panel session in the browser. For scripts, send <code>Authorization: Bearer &lt;PANEL_API_KEY&gt;</code>. Node-agent examples use <code>&lt;NODE_API_KEY&gt;</code>.</p></div><div class="quick-card"><div class="quick-icon"><i class="fa-solid fa-clock"></i></div><h3>Time fields</h3><p>Use <code>*_ts</code> or UTC ISO fields for calculations and <code>*_display</code> for text shown to people. <code>ttl_seconds</code> and other durations never receive a timezone offset.</p></div><div class="quick-card"><div class="quick-icon"><i class="fa-solid fa-flask"></i></div><h3>Testing</h3><p>Change Settings → Panel → Regional, then verify <code>/api/timezone</code>, peer logs, subscriptions, public links, app logs, and Telegram without restarting the panel.</p></div></div>
 <details class="api-security-note api-guide" style="margin: 0 0 18px;">
 <summary>Regional time contract</summary><p>
-  Settings → Panel → Regional is the single source of truth for every human-facing timestamp. Database values, epoch values, WireGuard handshakes, and canonical API ISO strings remain absolute UTC instants. Panel responses add the effective <code>display_timezone</code> and localized <code>*_display</code> fields where needed. Changing the saved IANA timezone changes display values immediately without rewriting stored data or restarting the service. Relative values such as <code>ttl_seconds</code>, “59m left,” and “2 hours ago” measure elapsed time and therefore do not change with the timezone.
+  Settings → Panel → Regional is the single source of truth for every human-facing timestamp. Database values, epoch values, AmneziaWG handshakes, and canonical API ISO strings remain absolute UTC instants. Panel responses add the effective <code>display_timezone</code> and localized <code>*_display</code> fields where needed. Changing the saved IANA timezone changes display values immediately without rewriting stored data or restarting the service. Relative values such as <code>ttl_seconds</code>, “59m left,” and “2 hours ago” measure elapsed time and therefore do not change with the timezone.
 </p></details>
 <div class="no-results" id="noResults" x-show="noResults" x-transition.opacity="">No matching routes found.</div>
 <section class="doc-section" data-section="Account profile" id="sec-account-profile"><div class="section-head"><div><h2>Account profile</h2><p>2 documented methods · login session required</p></div></div><div class="route-list"><article class="route-row" data-text="account profile get /api/account/profile avatar"><button type="button" class="route-main" aria-expanded="false"><span class="method m-get">GET</span><code class="route-path">/api/account/profile</code><span class="route-desc">Read your saved avatar</span><span class="auth-pill">Login session</span><span class="chev">⌄</span></button><div class="route-detail"><p>Returns or accepts <code>{"preset":"orbit","image":""}</code>. Presets: orbit, mountain, wave, forest, sunrise, initials, astronaut, fox, robot, owl, cat, prism. An optional PNG data URI may be at most 128 KiB decoded and 256 × 256 pixels. PUT requires a valid session CSRF token. Invalid data returns 400; oversized requests return 413. Profiles are stored per account.</p></div></article><article class="route-row" data-text="account profile put /api/account/profile avatar"><button type="button" class="route-main" aria-expanded="false"><span class="method m-put">PUT</span><code class="route-path">/api/account/profile</code><span class="route-desc">Save your avatar</span><span class="auth-pill">Login session</span><span class="chev">⌄</span></button><div class="route-detail"><p>Returns or accepts <code>{"preset":"orbit","image":""}</code>. Presets: orbit, mountain, wave, forest, sunrise, initials, astronaut, fox, robot, owl, cat, prism. An optional PNG data URI may be at most 128 KiB decoded and 256 × 256 pixels. PUT requires a valid session CSRF token. Invalid data returns 400; oversized requests return 413. Profiles are stored per account.</p></div></article></div></section><section class="doc-section" data-section="System" id="sec-System">
@@ -1222,12 +1222,12 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 </div>
 </article><article class="route-row" data-text="get /api/subscription_profiles subscription_profiles_list lists saved subscription profiles and identifies the active profile.">
 <button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/subscription_profiles</code><span class="route-desc">Lists saved subscription profiles and identifies the active profile.</span><span class="auth-pill">Login session</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Lists saved subscription profiles and identifies the active profile.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced WireGuard values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profiles_list</code></span></div></div>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Lists saved subscription profiles and identifies the active profile.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced AmneziaWG values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profiles_list</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X GET "https://panel.example.com/api/subscription_profiles" \
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"</code></pre><button class="copy-btn" data-copy='curl -X GET "https://panel.example.com/api/subscription_profiles" \
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"' type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="post /api/subscription_profiles subscription_profile_save creates or replaces a reusable subscription profile.">
 <button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/subscription_profiles</code><span class="route-desc">Creates or replaces a reusable subscription profile.</span><span class="auth-pill">Login session</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Creates or replaces a reusable subscription profile.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced WireGuard values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profile_save</code></span></div></div>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Creates or replaces a reusable subscription profile.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced AmneziaWG values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profile_save</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X POST "https://panel.example.com/api/subscription_profiles" \
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;" \
   -H "Content-Type: application/json" \
@@ -1236,7 +1236,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
   -H &quot;Content-Type: application/json&quot; \
   --data '{&quot;name&quot;:&quot;Mobile client&quot;,&quot;activate&quot;:true,&quot;profile&quot;:{&quot;include&quot;:{&quot;client&quot;:true,&quot;advanced&quot;:true,&quot;interfaces&quot;:true,&quot;template&quot;:true},&quot;client&quot;:{},&quot;advanced&quot;:{},&quot;interfaces&quot;:[],&quot;template&quot;:{}}}' " type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="get /api/subscription_profiles/&lt;path:profile_name&gt; subscription_profile_get returns one saved subscription profile and its stored sections.">
 <button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/subscription_profiles/&lt;path:profile_name&gt;</code><span class="route-desc">Returns one saved subscription profile and its stored sections.</span><span class="auth-pill">Login session</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns one saved subscription profile and its stored sections.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced WireGuard values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profile_get</code></span></div></div>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns one saved subscription profile and its stored sections.</p><div class="api-security-note">Subscription profiles are separate from peer profiles and can preserve client defaults, advanced AmneziaWG values, selected local/node interfaces, and public template settings.</div><div class="meta-line"><span>app.py</span><span>handler: <code>subscription_profile_get</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X GET "https://panel.example.com/api/subscription_profiles/&lt;path:profile_name&gt;" \
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"</code></pre><button class="copy-btn" data-copy='curl -X GET "https://panel.example.com/api/subscription_profiles/&lt;path:profile_name&gt;" \
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"' type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="post /api/subscription_profiles/&lt;path:profile_name&gt;/activate subscription_profile_activate marks a saved subscription profile as active/default.">
@@ -1341,9 +1341,9 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
   -H &quot;Authorization: Bearer &lt;PANEL_API_KEY&gt;&quot; -H &quot;Content-Type: application/json&quot; --data &#x27;{&quot;network&quot;:&quot;203.0.113.10/32&quot;}&#x27;" type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article></div></section>
 <section class="doc-section" data-section="Traffic Control" id="sec-Traffic-Control">
 <div class="section-head"><div><h2>Traffic Control</h2><p>6 documented methods</p></div><a class="top-link" href="#top">Top</a></div>
-<div class="api-security-note" style="margin:0 0 14px"><b>WireGuard forwarding policy.</b> Traffic Control filters forwarded WireGuard client traffic only. It does not rewrite AllowedIPs and it does not block traffic generated by the server itself.</div><div class="route-list"><article class="route-row" data-text="traffic control get /api/traffic-control traffic_control_get returns the saved wireguard traffic policies, available local/node targets, local/node nftables status, geoip provider, and domain-resolution mode.">
-<button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/traffic-control</code><span class="route-desc">Returns the saved WireGuard traffic policies, available local/node targets, local/node nftables status, GeoIP provider, and domain-resolution mode.</span><span class="auth-pill">Login or API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns the saved WireGuard traffic policies, available local/node targets, local/node nftables status, GeoIP provider, and domain-resolution mode.</p><div class="api-security-note"><code>domain_mode</code> is <code>resolved_ip</code>; domains are resolved to live IP sets. <code>geo_provider</code> is <code>IPdeny</code>.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_get</code></span></div></div>
+<div class="api-security-note" style="margin:0 0 14px"><b>AmneziaWG forwarding policy.</b> Traffic Control filters forwarded AmneziaWG client traffic only. It does not rewrite AllowedIPs and it does not block traffic generated by the server itself.</div><div class="route-list"><article class="route-row" data-text="traffic control get /api/traffic-control traffic_control_get returns the saved wireguard traffic policies, available local/node targets, local/node nftables status, geoip provider, and domain-resolution mode.">
+<button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/traffic-control</code><span class="route-desc">Returns the saved AmneziaWG traffic policies, available local/node targets, local/node nftables status, GeoIP provider, and domain-resolution mode.</span><span class="auth-pill">Login or API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns the saved AmneziaWG traffic policies, available local/node targets, local/node nftables status, GeoIP provider, and domain-resolution mode.</p><div class="api-security-note"><code>domain_mode</code> is <code>resolved_ip</code>; domains are resolved to live IP sets. <code>geo_provider</code> is <code>IPdeny</code>.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_get</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X GET "https://panel.example.com/api/traffic-control"
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"</code></pre><button class="copy-btn" data-copy="curl -X GET &quot;https://panel.example.com/api/traffic-control&quot;
   -H &quot;Authorization: Bearer &lt;PANEL_API_KEY&gt;&quot;" type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="traffic control post /api/traffic-control traffic_control_save validates and saves normalized traffic control policies for domains, ip/cidr targets, countries, interfaces, peers, and nodes.">
@@ -1366,15 +1366,15 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X GET "https://panel.example.com/api/traffic-control/status"
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;"</code></pre><button class="copy-btn" data-copy="curl -X GET &quot;https://panel.example.com/api/traffic-control/status&quot;
   -H &quot;Authorization: Bearer &lt;PANEL_API_KEY&gt;&quot;" type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="traffic control post /api/traffic-control/test traffic_control_test checks one saved policy against the live nftables/wireguard state and returns diagnostic checks plus real hit counters.">
-<button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/traffic-control/test</code><span class="route-desc">Checks one saved policy against the live nftables/WireGuard state and returns diagnostic checks plus real hit counters.</span><span class="auth-pill">Login session</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Checks one saved policy against the live nftables/WireGuard state and returns diagnostic checks plus real hit counters.</p><div class="api-security-note"><b>Diagnostic semantics:</b> a valid policy diagnostic returns HTTP 200 even when <code>ok:false</code>; the JSON checks explain what needs attention. Disabled policies still return 409 because they are intentionally not loaded.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_test</code></span></div></div>
+<button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/traffic-control/test</code><span class="route-desc">Checks one saved policy against the live nftables/AmneziaWG state and returns diagnostic checks plus real hit counters.</span><span class="auth-pill">Login session</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Checks one saved policy against the live nftables/AmneziaWG state and returns diagnostic checks plus real hit counters.</p><div class="api-security-note"><b>Diagnostic semantics:</b> a valid policy diagnostic returns HTTP 200 even when <code>ok:false</code>; the JSON checks explain what needs attention. Disabled policies still return 409 because they are intentionally not loaded.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_test</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X POST "https://panel.example.com/api/traffic-control/test"
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;" \
   -H "Content-Type: application/json" \
   --data '{"policy_id":"ps5"}'</code></pre><button class="copy-btn" data-copy="curl -X POST &quot;https://panel.example.com/api/traffic-control/test&quot;
   -H &quot;Authorization: Bearer &lt;PANEL_API_KEY&gt;&quot; -H &quot;Content-Type: application/json&quot; --data &#x27;{&quot;policy_id&quot;:&quot;ps5&quot;}&#x27;" type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="traffic control post /api/traffic-control/test-destination traffic_control_test_destination predicts whether a domain, url, ipv4, or ipv6 destination would match one selected policy’s current live sets and scoped drop rules.">
 <button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/traffic-control/test-destination</code><span class="route-desc">Predicts whether a domain, URL, IPv4, or IPv6 destination would match one selected policy’s current live sets and scoped DROP rules.</span><span class="auth-pill">Login or API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Predicts whether a domain, URL, IPv4, or IPv6 destination would match one selected policy’s current live sets and scoped DROP rules.</p><div class="api-security-note">This does not impersonate the peer and does not generate fake WireGuard traffic. It resolves the target, inspects current sets/rules, and returns verdicts such as <code>blocked</code>, <code>partial</code>, <code>not_blocked</code>, or <code>not_applicable</code>.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_test_destination</code></span></div></div>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Predicts whether a domain, URL, IPv4, or IPv6 destination would match one selected policy’s current live sets and scoped DROP rules.</p><div class="api-security-note">This does not impersonate the peer and does not generate fake AmneziaWG traffic. It resolves the target, inspects current sets/rules, and returns verdicts such as <code>blocked</code>, <code>partial</code>, <code>not_blocked</code>, or <code>not_applicable</code>.</div><div class="meta-line"><span>app.py</span><span>handler: <code>traffic_control_test_destination</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X POST "https://panel.example.com/api/traffic-control/test-destination"
   -H "Authorization: Bearer &lt;PANEL_API_KEY&gt;" \
   -H "Content-Type: application/json" \
@@ -1385,7 +1385,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-card" style="margin:0 0 14px">
 <div class="detail-title">Client endpoint precedence</div>
 <p>Every code path that fills in a peer's client-facing endpoint — peer create, bulk create, config export, and the <code>endpoint-default/apply</code> routes below — resolves it in the same order: an explicit value on the request, then the interface's saved <code>endpoint-default</code> override, then auto-detection (the panel's configured domain or public IP, paired with the interface's listen port), then empty if none of those produce a value. This precedence lives in one place, <code>resolve_client_endpoint</code>, so nothing bypasses it.</p>
-<p>Two fields carry endpoint data and must not be confused. <code>Peer.endpoint</code> is the <b>client-facing server endpoint</b>: the address the panel writes into the <i>client's</i> <code>[Peer]</code> block so the client knows where to dial. <code>Peer.peer_endpoint</code> is a <b>fixed remote-client endpoint</b>: written into the <i>server's</i> <code>[Peer]</code> block, and normally left empty because WireGuard learns a roaming client's endpoint from its first authenticated packet.</p>
+<p>Two fields carry endpoint data and must not be confused. <code>Peer.endpoint</code> is the <b>client-facing server endpoint</b>: the address the panel writes into the <i>client's</i> <code>[Peer]</code> block so the client knows where to dial. <code>Peer.peer_endpoint</code> is a <b>fixed remote-client endpoint</b>: written into the <i>server's</i> <code>[Peer]</code> block, and normally left empty because AmneziaWG learns a roaming client's endpoint from its first authenticated packet.</p>
 </div>
 <div class="route-list">
 <article class="route-row" data-text="interfaces get /api/get-interfaces get_interfaces endpoint for get interfaces.">
@@ -1417,7 +1417,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-del">DELETE</span>
 <code class="route-path">/api/iface/&lt;int:iface_id&gt;</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login or API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1425,7 +1425,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_delete</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1442,7 +1442,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/iface/&lt;int:iface_id&gt;/available_ips</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login or API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1450,7 +1450,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_available_ips</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1467,7 +1467,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/iface/&lt;int:iface_id&gt;/disable</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login or API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1475,7 +1475,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_disable</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1496,7 +1496,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/iface/&lt;int:iface_id&gt;/enable</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login or API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1504,7 +1504,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_enable</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1525,7 +1525,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1533,7 +1533,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_settings</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1550,7 +1550,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1558,7 +1558,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_settings</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1587,7 +1587,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;/&lt;action&gt;</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1595,7 +1595,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_updown</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1624,7 +1624,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-del">DELETE</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;/logs</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1632,7 +1632,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_logs</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1649,7 +1649,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;/logs</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1657,7 +1657,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_logs</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1674,7 +1674,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/iface/&lt;int:iid&gt;/status</code>
-<span class="route-desc">Reads or changes local WireGuard interface state.</span>
+<span class="route-desc">Reads or changes local AmneziaWG interface state.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -1682,7 +1682,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads or changes local WireGuard interface state.</p>
+<p>Reads or changes local AmneziaWG interface state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>iface_status</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -1801,7 +1801,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Creates a local WireGuard interface. When <code>auto_firewall</code> is true, the panel detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The submitted DNS value is retained as client metadata and is not written as a server-side <code>DNS =</code> directive.</p>
+<p>Creates a local AmneziaWG interface. When <code>auto_firewall</code> is true, the panel detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The submitted DNS value is retained as client metadata and is not written as a server-side <code>DNS =</code> directive.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>create_local_interface</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -2005,7 +2005,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Deletes all stored <code>PeerEvent</code> rows for the selected peer. This does not change the peer, its expiry, or current WireGuard runtime state.</p>
+<p>Deletes all stored <code>PeerEvent</code> rows for the selected peer. This does not change the peer, its expiry, or current AmneziaWG runtime state.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>clear_peer_logs</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -2022,7 +2022,7 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/peer/&lt;int:pid&gt;/logs</code>
-<span class="route-desc">Returns up to 500 peer events plus the peer's current local/node WireGuard runtime snapshot.</span>
+<span class="route-desc">Returns up to 500 peer events plus the peer's current local/node AmneziaWG runtime snapshot.</span>
 <span class="auth-pill">Login session</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -2390,8 +2390,8 @@ https://panel.example.com/settings" type="button"><i class="fa-regular fa-copy">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
 <p>Creates a peer on a local interface (<code>scope: "local"</code>, the default) or on a node (<code>scope: "node"</code> with <code>node_id</code> and <code>iface_name</code>).</p>
-<p><b>Address.</b> Omit <code>address</code> and the panel allocates the first free client address on the interface. The interface's own host address is never allocated, so no placeholder peer is needed. Supply <code>address</code> to pin one: it must be inside the interface network, of the same family, not the interface host, and not already in use. Invalid input returns <code>400 invalid_address</code>; a taken address or an exhausted pool returns <code>409 address_conflict</code> or <code>409 address_pool_exhausted</code>. Nothing is written to WireGuard or the database when validation fails.</p>
-<p><b>Endpoints.</b> <code>endpoint</code> is this server's <code>host:port</code>, written into the <i>client's</i> config. Omit it and the peer now resolves through the interface's endpoint default at export time — its saved override, or auto-detection — instead of freezing whatever auto-detection returned at creation time, so a later change to the override or the auto-detected address is picked up automatically. <code>peer_endpoint</code> is an optional fixed endpoint for a non-roaming client and is the only value written into the <i>server's</i> <code>[Peer]</code> block; leave it empty unless you need it, because WireGuard learns a roaming client's endpoint from its first authenticated packet.</p>
+<p><b>Address.</b> Omit <code>address</code> and the panel allocates the first free client address on the interface. The interface's own host address is never allocated, so no placeholder peer is needed. Supply <code>address</code> to pin one: it must be inside the interface network, of the same family, not the interface host, and not already in use. Invalid input returns <code>400 invalid_address</code>; a taken address or an exhausted pool returns <code>409 address_conflict</code> or <code>409 address_pool_exhausted</code>. Nothing is written to AmneziaWG or the database when validation fails.</p>
+<p><b>Endpoints.</b> <code>endpoint</code> is this server's <code>host:port</code>, written into the <i>client's</i> config. Omit it and the peer now resolves through the interface's endpoint default at export time — its saved override, or auto-detection — instead of freezing whatever auto-detection returned at creation time, so a later change to the override or the auto-detected address is picked up automatically. <code>peer_endpoint</code> is an optional fixed endpoint for a non-roaming client and is the only value written into the <i>server's</i> <code>[Peer]</code> block; leave it empty unless you need it, because AmneziaWG learns a roaming client's endpoint from its first authenticated packet.</p>
 <p>The response returns the address that was actually allocated, plus <code>endpoint</code> and <code>peer_endpoint</code>.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>peers_create</code></span></div>
 </div>
@@ -3495,7 +3495,7 @@ https://panel.example.com/ui/nodes" type="button"><i class="fa-regular fa-copy">
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/subscriptions</code>
-<span class="route-desc">Lists subscriptions with shared limits plus live WireGuard connection state for every attached config.</span>
+<span class="route-desc">Lists subscriptions with shared limits plus live AmneziaWG connection state for every attached config.</span>
 <span class="auth-pill">Login or API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -3504,7 +3504,7 @@ https://panel.example.com/ui/nodes" type="button"><i class="fa-regular fa-copy">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
 <p>Returns <code>{"subscriptions": [...]}</code>, with each subscription produced by <code>_subscription_row()</code>. Administrative peer state remains separate from live tunnel state. Each location includes <code>connected</code>, <code>connection_status</code>, <code>connection_label</code>, <code>conn_reason</code>, <code>latest_handshake</code>, <code>latest_handshake_age</code>, <code>last_activity_at</code>, and <code>runtime_available</code>. The subscription also includes an aggregate <code>connection</code> object describing the active location with the newest handshake.</p>
-<div class="api-security-note">Live connection state is handshake-based. The panel uses <code>WG_SUBSCRIPTION_CONNECTED_WINDOW</code> when present; otherwise it defaults to 180 seconds, with a 30-second minimum. Local runtime is read from WireGuard directly. Node runtime is read from the node agent's <code>/api/peers</code> response and cached once per node for the current Flask request.</div>
+<div class="api-security-note">Live connection state is handshake-based. The panel uses <code>WG_SUBSCRIPTION_CONNECTED_WINDOW</code> when present; otherwise it defaults to 180 seconds, with a 30-second minimum. Local runtime is read from AmneziaWG directly. Node runtime is read from the node agent's <code>/api/peers</code> response and cached once per node for the current Flask request.</div>
 <div class="meta-line"><span>app.py</span><span>handler: <code>api_subscriptions</code></span><span>runtime: <code>_subscription_peer_runtime</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -3614,7 +3614,7 @@ https://panel.example.com/ui/nodes" type="button"><i class="fa-regular fa-copy">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
 <p>Deletes one subscription.</p>
-<p>Peers the subscription <i>created</i> are removed from the WireGuard runtime, the interface config and the database. Peers that were <i>attached</i> after being created elsewhere are only detached and keep running. Pass <code>?delete_peers=0</code> to detach everything instead.</p>
+<p>Peers the subscription <i>created</i> are removed from the AmneziaWG runtime, the interface config and the database. Peers that were <i>attached</i> after being created elsewhere are only detached and keep running. Pass <code>?delete_peers=0</code> to detach everything instead.</p>
 <p>The response reports <code>deleted</code>, <code>detached</code> and <code>failed</code> counts. If a peer cannot be fully removed, the subscription is kept, the response is <code>502 subscription_delete_incomplete</code> with a per-peer <code>failures</code> list, and the request can be retried.</p>
 <div class="meta-line"><span>app.py</span><span>handler: <code>api_subscription_delete</code></span></div>
 </div>
@@ -4386,10 +4386,10 @@ https://panel.example.com/u/example-token" type="button"><i class="fa-regular fa
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Builds a full ZIP containing panel data and, when requested, local WireGuard files plus reachable node WireGuard configurations and node-agent environment files. With <code>auto=1</code>, the archive is retained in the automatic-backup directory before the ZIP response is returned.</p>
+<p>Builds a full ZIP containing panel data and, when requested, local AmneziaWG files plus reachable node AmneziaWG configurations and node-agent environment files. With <code>auto=1</code>, the archive is retained in the automatic-backup directory before the ZIP response is returned.</p>
 <div class="api-param-list">
 <div><code>auto=1</code><span>Retain a local automatic-backup copy.</span></div>
-<div><code>wg=1|0</code><span>Include local and reachable-node WireGuard configuration material.</span></div>
+<div><code>wg=1|0</code><span>Include local and reachable-node AmneziaWG configuration material.</span></div>
 <div><code>tg=1|0</code><span>Send the generated archive to configured Telegram recipients when enabled.</span></div>
 </div>
 <div class="api-security-note">The ZIP may contain private keys, API keys, Telegram settings, and node-agent <code>.env</code> files. Store and transmit it as sensitive material.</div>
@@ -4888,7 +4888,7 @@ X-Backup-Saved-Timestamp: 1785864300</code></pre>
 <div class="detail-card">
 <div class="detail-title">What it does</div>
 <p>Inspects a saved automatic backup directly on the server without downloading or restoring it.</p>
-<p>Returns detected backup kind, database/settings presence, local and node WireGuard files, panel and node <code>.env</code>
+<p>Returns detected backup kind, database/settings presence, local and node AmneziaWG files, panel and node <code>.env</code>
 <div class="meta-line"><span>app.py</span><span>handler: <code>inspect_saved_auto_backup</code></span></div>
 </p></div>
 <div class="detail-card command-card">
@@ -5467,7 +5467,7 @@ https://panel.example.com/logs" type="button"><i class="fa-regular fa-copy"></i>
 <div class="api-param-list">
 <div><code>app_down</code> / <code>app_up</code><span>Panel outage and recovery are independent watchdog events.</span></div>
 <div><code>node_down</code> / <code>node_up</code><span>Remote node availability transitions.</span></div>
-<div><code>iface_down</code> / <code>iface_up</code><span>WireGuard interface state transitions.</span></div>
+<div><code>iface_down</code> / <code>iface_up</code><span>AmneziaWG interface state transitions.</span></div>
 <div><code>peer_expired</code> / <code>peer_limit</code><span>Peer enforcement events.</span></div>
 <div><code>login_success</code> / <code>login_fail</code><span>Administrative authentication events.</span></div>
 <div><code>suspicious_4xx</code><span>Rolling burst detection for 401, 403, 404, 405, and 429 responses.</span></div>
@@ -5711,7 +5711,7 @@ https://panel.example.com/" type="button"><i class="fa-regular fa-copy"></i> Cop
 </section>
 <section class="doc-section" data-section="Node Agent" id="sec-Node-Agent">
 <div class="section-head"><div><h2>Node Agent</h2><p>28 documented methods</p></div><a class="top-link" href="#top">Top</a></div>
-<div class="api-security-note" style="margin:0 0 14px"><b>Node time contract.</b> The node agent intentionally stays timezone-neutral. Unix values such as health <code>now</code> and WireGuard <code>latest_handshake</code> are absolute epoch seconds; ISO timestamps and backup metadata use UTC <code>Z</code>. The panel or Telegram converts those instants once with the saved Regional timezone. Localizing inside <code>node_agent.py</code> would double-apply the offset.</div>
+<div class="api-security-note" style="margin:0 0 14px"><b>Node time contract.</b> The node agent intentionally stays timezone-neutral. Unix values such as health <code>now</code> and AmneziaWG <code>latest_handshake</code> are absolute epoch seconds; ISO timestamps and backup metadata use UTC <code>Z</code>. The panel or Telegram converts those instants once with the saved Regional timezone. Localizing inside <code>node_agent.py</code> would double-apply the offset.</div>
 <div class="api-security-note" style="margin:0 0 14px"><b>Operations contract.</b> A v16 node agent exposes authenticated host-local diagnostic, repair, and rollback endpoints. Mutating calls are serialized across gunicorn workers with a restricted file lock and accept only fixed repair identifiers.</div>
 
 <div class="route-list">
@@ -5719,7 +5719,7 @@ https://panel.example.com/" type="button"><i class="fa-regular fa-copy"></i> Cop
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/backup/wg</code>
-<span class="route-desc">Creates a node backup containing all WireGuard interface configs and the node-agent .env file when available.</span>
+<span class="route-desc">Creates a node backup containing all AmneziaWG interface configs and the node-agent .env file when available.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -5727,9 +5727,9 @@ https://panel.example.com/" type="button"><i class="fa-regular fa-copy"></i> Cop
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Creates a node backup containing all WireGuard interface configs and the node-agent .env file when available.</p>
+<p>Creates a node backup containing all AmneziaWG interface configs and the node-agent .env file when available.</p>
 <p>Archive layout includes <code>wg/&lt;interface&gt;.conf</code>, optional <code>env/.env</code>, and <code>meta/node.json</code>.</p>
-<p class="api-security-note"><strong>Sensitive archive:</strong> node backups can contain WireGuard private keys and the node API key.</p>
+<p class="api-security-note"><strong>Sensitive archive:</strong> node backups can contain AmneziaWG private keys and the node API key.</p>
 <div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_backup_wg</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -5748,7 +5748,7 @@ https://panel.example.com/" type="button"><i class="fa-regular fa-copy"></i> Cop
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/backup/wg/restore</code>
-<span class="route-desc">Restores node WireGuard configs and optionally the node-agent .env file.</span>
+<span class="route-desc">Restores node AmneziaWG configs and optionally the node-agent .env file.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -5756,7 +5756,7 @@ https://panel.example.com/" type="button"><i class="fa-regular fa-copy"></i> Cop
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Restores node WireGuard configs and optionally the node-agent .env file.</p>
+<p>Restores node AmneziaWG configs and optionally the node-agent .env file.</p>
 <div class="api-param-list">
 <div><code>files</code><span>Object keyed by safe <code>.conf</code> filenames.</span></div>
 <div><code>env_file</code><span>Optional complete node-agent <code>.env</code> content.</span></div>
@@ -5805,7 +5805,7 @@ PORT=9898
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/health</code>
-<span class="route-desc">Returns node reachability, uptime, agent version, public IP, and WireGuard interface state.</span>
+<span class="route-desc">Returns node reachability, uptime, agent version, public IP, and AmneziaWG interface state.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -5844,8 +5844,8 @@ PORT=9898
 </div>
 </div>
 </article>
-<article class="route-row" data-text="node agent post /api/operations/peer-diagnostic node_operations_peer_diagnostic peer runtime read only"><button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/operations/peer-diagnostic</code><span class="route-desc">Returns read-only runtime/path evidence for one validated interface/public-key pair.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">Safety contract</div><p>Accepts only <code>interface</code> and WireGuard <code>public_key</code>. It runs fixed WireGuard/runtime probes and never returns private or preshared key material or accepts shell commands.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_peer_diagnostic</code></span></div></div><div class="detail-card command-card"><pre><code>{"interface":"wg0","public_key":"&lt;WIREGUARD_PUBLIC_KEY&gt;"}</code></pre></div></div></div></article>
-<article class="route-row" data-text="node agent get /api/operations/diagnostic node_operations_diagnostic host local operations"><button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/operations/diagnostic</code><span class="route-desc">Runs host-local Operations diagnostics on the node.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns node-local WireGuard tooling/interfaces, forwarding, default route, firewall, DNS, disk, time synchronization, pending reboot, node environment permissions, and Network Path readiness. The diagnostic is read-only.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_diagnostic</code></span></div></div><div class="detail-card command-card"><pre><code>curl -X GET "https://node.example.com:9898/api/operations/diagnostic" \
+<article class="route-row" data-text="node agent post /api/operations/peer-diagnostic node_operations_peer_diagnostic peer runtime read only"><button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/operations/peer-diagnostic</code><span class="route-desc">Returns read-only runtime/path evidence for one validated interface/public-key pair.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">Safety contract</div><p>Accepts only <code>interface</code> and AmneziaWG <code>public_key</code>. It runs fixed AmneziaWG/runtime probes and never returns private or preshared key material or accepts shell commands.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_peer_diagnostic</code></span></div></div><div class="detail-card command-card"><pre><code>{"interface":"wg0","public_key":"&lt;WIREGUARD_PUBLIC_KEY&gt;"}</code></pre></div></div></div></article>
+<article class="route-row" data-text="node agent get /api/operations/diagnostic node_operations_diagnostic host local operations"><button aria-expanded="false" class="route-main" type="button"><span class="method m-get">GET</span><code class="route-path">/api/operations/diagnostic</code><span class="route-desc">Runs host-local Operations diagnostics on the node.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Returns node-local AmneziaWG tooling/interfaces, forwarding, default route, firewall, DNS, disk, time synchronization, pending reboot, node environment permissions, and Network Path readiness. The diagnostic is read-only.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_diagnostic</code></span></div></div><div class="detail-card command-card"><pre><code>curl -X GET "https://node.example.com:9898/api/operations/diagnostic" \
   -H "Authorization: Bearer &lt;NODE_API_KEY&gt;"</code></pre></div></div></div></article>
 <article class="route-row" data-text="node agent post /api/operations/repair node_operations_repair action confirm target"><button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/operations/repair</code><span class="route-desc">Executes one allow-listed node repair and verifies the result.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">Safety contract</div><p><code>confirm:true</code> is required. Supported actions are fixed by the agent. The request cannot supply a shell command, package name, or filesystem path. Mutating Operations calls are serialized across worker processes.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_repair</code></span></div></div><div class="detail-card command-card"><pre><code>{"action":"restrict_env","confirm":true}</code></pre></div></div></div></article>
 <article class="route-row" data-text="node agent post /api/operations/rollback node_operations_rollback token confirm"><button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/operations/rollback</code><span class="route-desc">Restores supported node repair snapshots after drift verification.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button><div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Accepts only a 32-character rollback token created by a reversible repair plus <code>confirm:true</code>. Current reversible node repairs are environment-file permissions and IPv4 forwarding. Interface startup is deliberately not auto-rollbackable.</p><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_operations_rollback</code></span></div></div></div></div></article>
@@ -6045,7 +6045,7 @@ PORT=9898
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Creates a local WireGuard interface. When <code>auto_firewall</code> is true, the panel detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The submitted DNS value is retained as client metadata and is not written as a server-side <code>DNS =</code> directive.</p>
+<p>Creates a local AmneziaWG interface. When <code>auto_firewall</code> is true, the panel detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The submitted DNS value is retained as client metadata and is not written as a server-side <code>DNS =</code> directive.</p>
 <div class="meta-line"><span>node_agent.py</span><span>handler: <code>interfaces</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -6062,7 +6062,7 @@ PORT=9898
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/interfaces/create</code>
-<span class="route-desc">Creates a WireGuard interface with optional automatic forwarding and NAT rules.</span>
+<span class="route-desc">Creates a AmneziaWG interface with optional automatic forwarding and NAT rules.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -6070,7 +6070,7 @@ PORT=9898
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Creates a WireGuard interface on the node. With <code>auto_firewall</code> enabled, the agent detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The response may include <code>auto_firewall</code>, <code>egress_interface</code>, <code>post_up</code>, <code>post_down</code>, and <code>up_error</code>. DNS is kept for generated client configurations and is not written into the server interface file.</p>
+<p>Creates a AmneziaWG interface on the node. With <code>auto_firewall</code> enabled, the agent detects the default IPv4 egress interface, enables IPv4 forwarding, and writes idempotent subnet-scoped <code>PostUp</code>/<code>PostDown</code> FORWARD and MASQUERADE rules. The response may include <code>auto_firewall</code>, <code>egress_interface</code>, <code>post_up</code>, <code>post_down</code>, and <code>up_error</code>. DNS is kept for generated client configurations and is not written into the server interface file.</p>
 <div class="meta-line"><span>node_agent.py</span><span>handler: <code>create_interface</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -6161,7 +6161,7 @@ PORT=9898
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-post">POST</span>
 <code class="route-path">/api/peer/&lt;path:pub&gt;/enable</code>
-<span class="route-desc">Restores a saved peer to the live WireGuard runtime and removes its blackhole route.</span>
+<span class="route-desc">Restores a saved peer to the live AmneziaWG runtime and removes its blackhole route.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -6170,7 +6170,7 @@ PORT=9898
 <div class="detail-card">
 <div class="detail-title">What it does</div>
 <p>Reads the peer's saved interface, AllowedIPs, endpoint, and keepalive; brings the interface up when needed; restores the peer with <code>wg set</code>; and removes the host blackhole route used while disabled.</p>
-<div class="api-security-note">Saved domain endpoints are resolved before the live runtime command. The hostname remains unchanged in the persistent WireGuard configuration.</div>
+<div class="api-security-note">Saved domain endpoints are resolved before the live runtime command. The hostname remains unchanged in the persistent AmneziaWG configuration.</div>
 <div class="meta-line"><span>node_agent.py</span><span>handler: <code>enable_peer</code></span></div>
 </div>
 <div class="detail-card command-card">
@@ -6196,7 +6196,7 @@ PORT=9898
 <button aria-expanded="false" class="route-main" type="button">
 <span class="method m-get">GET</span>
 <code class="route-path">/api/peers</code>
-<span class="route-desc">Lists node WireGuard peers with transfer totals, latest handshake age, probe result, and connection reason.</span>
+<span class="route-desc">Lists node AmneziaWG peers with transfer totals, latest handshake age, probe result, and connection reason.</span>
 <span class="auth-pill">Node API key</span>
 <span class="chev"><i class="fa-solid fa-chevron-down"></i></span>
 </button>
@@ -6204,10 +6204,10 @@ PORT=9898
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Reads <code>wg show all dump</code>. Use <code>?iface=wg0</code> to restrict the result to one interface. Every row exposes the public key, AllowedIPs, the WireGuard-observed remote <code>endpoint</code>, a normalized host-only <code>endpoint_host</code>, MiB counters, latest handshake epoch/age, and node-reported connection fields.</p>
+<p>Reads <code>awg show all dump</code>. Use <code>?iface=wg0</code> to restrict the result to one interface. Every row exposes the public key, AllowedIPs, the AmneziaWG-observed remote <code>endpoint</code>, a normalized host-only <code>endpoint_host</code>, MiB counters, latest handshake epoch/age, and node-reported connection fields.</p>
 <div class="api-param-list">
 <div><code>WG_ONLINE_HANDSHAKE_WINDOW</code><span>Fresh-handshake window used by the node; default 180 seconds.</span></div>
-<div><code>WG_ONLINE_PROBE_FIRST</code><span>When enabled (default), the node first pings the peer's point address through the WireGuard interface.</span></div>
+<div><code>WG_ONLINE_PROBE_FIRST</code><span>When enabled (default), the node first pings the peer's point address through the AmneziaWG interface.</span></div>
 <div><code>WG_ONLINE_HANDSHAKE_FALLBACK</code><span>When enabled, a fresh handshake may keep the node-reported status online after a failed probe. Default is disabled in this node source.</span></div>
 </div>
 <div class="api-security-note">The panel's subscription Connected/Disconnected indicator does not rely solely on node <code>conn_status</code>; it consumes <code>latest_handshake</code> and <code>latest_handshake_age</code> directly so a client that blocks ICMP can still be recognized as recently active.</div>
@@ -6256,9 +6256,9 @@ PORT=9898
 <div class="detail-grid">
 <div class="detail-card">
 <div class="detail-title">What it does</div>
-<p>Adds or updates a peer under an interface-specific file lock. It validates or allocates the client host address, prevents duplicate addresses, updates the live WireGuard runtime, writes the persistent peer block atomically, verifies both runtime and config, and rolls back on failure.</p>
+<p>Adds or updates a peer under an interface-specific file lock. It validates or allocates the client host address, prevents duplicate addresses, updates the live AmneziaWG runtime, writes the persistent peer block atomically, verifies both runtime and config, and rolls back on failure.</p>
 <div class="api-param-list">
-<div><code>iface</code><span>Target WireGuard interface name.</span></div>
+<div><code>iface</code><span>Target AmneziaWG interface name.</span></div>
 <div><code>public_key</code><span>Peer public key.</span></div>
 <div><code>host_cidr</code><span>Optional explicit client host. Omit to allocate the first free host.</span></div>
 <div><code>endpoint</code><span>Optional fixed remote-client endpoint in <code>host:port</code>, IPv4, domain, or bracketed IPv6 form.</span></div>
@@ -6361,7 +6361,7 @@ PORT=9898
 </div></div>
 </article><article class="route-row" data-text="post /api/peer/&lt;path:pub&gt;/reset_data reset_peer_data reads live rx/tx counters for a node peer so panel accounting can establish a new reset baseline.">
 <button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/peer/&lt;path:pub&gt;/reset_data</code><span class="route-desc">Reads live RX/TX counters for a node peer so panel accounting can establish a new reset baseline.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Reads live RX/TX counters for a node peer so panel accounting can establish a new reset baseline.</p><div class="api-security-note">This route reads the kernel counters; it does not zero WireGuard kernel counters directly.</div><div class="meta-line"><span>node_agent.py</span><span>handler: <code>reset_peer_data</code></span></div></div>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Reads live RX/TX counters for a node peer so panel accounting can establish a new reset baseline.</p><div class="api-security-note">This route reads the kernel counters; it does not zero AmneziaWG kernel counters directly.</div><div class="meta-line"><span>node_agent.py</span><span>handler: <code>reset_peer_data</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X POST "https://node.example.com/api/peer/&lt;path:pub&gt;/reset_data" \
   -H "Authorization: Bearer &lt;NODE_API_KEY&gt;" \
   -H "Content-Type: application/json" \
@@ -6374,8 +6374,8 @@ PORT=9898
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X GET "https://node.example.net:9898/api/traffic-control/status"
   -H "Authorization: Bearer &lt;NODE_API_KEY&gt;"</code></pre><button class="copy-btn" data-copy="curl -X GET &quot;https://node.example.net:9898/api/traffic-control/status&quot;
   -H &quot;Authorization: Bearer &lt;NODE_API_KEY&gt;&quot;" type="button"><i class="fa-regular fa-copy"></i> Copy</button></div></div></div></article><article class="route-row" data-text="node agent post /api/traffic-control/apply node_traffic_control_apply transactionally replaces the node’s dedicated wireguard traffic control nftables table using policies sent by the panel.">
-<button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/traffic-control/apply</code><span class="route-desc">Transactionally replaces the node’s dedicated WireGuard Traffic Control nftables table using policies sent by the panel.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
-<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Transactionally replaces the node’s dedicated WireGuard Traffic Control nftables table using policies sent by the panel.</p><div class="api-security-note">The node uses <code>nft -f</code> transactionally. If the new script is invalid, nftables keeps the existing live table intact.</div><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_traffic_control_apply</code></span></div></div>
+<button aria-expanded="false" class="route-main" type="button"><span class="method m-post">POST</span><code class="route-path">/api/traffic-control/apply</code><span class="route-desc">Transactionally replaces the node’s dedicated AmneziaWG Traffic Control nftables table using policies sent by the panel.</span><span class="auth-pill">Node API key</span><span class="chev"><i class="fa-solid fa-chevron-down"></i></span></button>
+<div class="route-detail"><div class="detail-grid"><div class="detail-card"><div class="detail-title">What it does</div><p>Transactionally replaces the node’s dedicated AmneziaWG Traffic Control nftables table using policies sent by the panel.</p><div class="api-security-note">The node uses <code>nft -f</code> transactionally. If the new script is invalid, nftables keeps the existing live table intact.</div><div class="meta-line"><span>node_agent.py</span><span>handler: <code>node_traffic_control_apply</code></span></div></div>
 <div class="detail-card command-card"><div class="detail-title">Example command</div><pre><code>curl -X POST "https://node.example.net:9898/api/traffic-control/apply"
   -H "Authorization: Bearer &lt;NODE_API_KEY&gt;" \
   -H "Content-Type: application/json" \

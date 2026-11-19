@@ -1,3 +1,8 @@
+AmneziaWG 3.1 Docker setup
+
+The host must provide /dev/net/tun. The image builds awg, awg-quick, and
+amneziawg-go. Interface files are mounted from /etc/amnezia/amneziawg.
+
 cp docker.env.example .env           
 docker compose build panel
 docker compose up -d panel

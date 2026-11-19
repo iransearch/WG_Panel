@@ -5,6 +5,8 @@ import argparse, datetime as dt, json, os, shutil, subprocess, sys, tarfile, tem
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+REPO_REF = "feature/amneziawg"
+
 EXCLUDES = {
     ".git", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
     "instance", ".env", "backups", "restore_snapshots",
@@ -52,7 +54,7 @@ def github_main_metadata(repo: str) -> dict:
 
     revision = ""
     commit_date = ""
-    url = f"https://github.com/{repo}/commits/main"
+    url = f"https://github.com/{repo}/commits/{REPO_REF}"
 
     git = shutil.which("git")
     if git:
@@ -62,7 +64,7 @@ def github_main_metadata(repo: str) -> dict:
                     git,
                     "ls-remote",
                     f"https://github.com/{repo}.git",
-                    "refs/heads/main",
+                    f"refs/heads/{REPO_REF}",
                 ],
                 timeout=45,
                 check=False,
@@ -92,7 +94,7 @@ def github_main_metadata(repo: str) -> dict:
 
         try:
             request = Request(
-                f"https://api.github.com/repos/{repo}/commits/main",
+                f"https://api.github.com/repos/{repo}/commits/{REPO_REF}",
                 headers=headers,
             )
             with urlopen(request, timeout=30) as response:
@@ -116,10 +118,10 @@ def github_main_metadata(repo: str) -> dict:
 
 
 def download_repo(repo: str, target: str, dest: Path) -> dict:
-    """Download main without making GitHub API availability a prerequisite."""
+    """Download the AmneziaWG branch without making GitHub API availability a prerequisite."""
     urls = [
-        f"https://codeload.github.com/{repo}/tar.gz/refs/heads/main",
-        f"https://github.com/{repo}/archive/refs/heads/main.tar.gz",
+        f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{REPO_REF}",
+        f"https://github.com/{repo}/archive/refs/heads/{REPO_REF}.tar.gz",
     ]
 
     errors = []

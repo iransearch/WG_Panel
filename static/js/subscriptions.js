@@ -891,7 +891,7 @@ function renderPicker(){
     modeHelp.textContent = EDIT_ID
       ? 'Existing inbounds remain attached. Use this area only if you want to add another config to this client.'
       : (MODE === 'new'
-        ? 'Create fresh WireGuard configs for this client on the selected local or node interfaces.'
+        ? 'Create fresh AmneziaWG configs for this client on the selected local or node interfaces.'
         : 'Choose existing configs to include in this client.');
   }
 
@@ -1047,7 +1047,7 @@ function showSubscriptionDiagnosis(s){
   const dialog=document.createElement('dialog');dialog.id='sub-diagnosis';dialog.className='sub-diagnosis';dialog.setAttribute('aria-labelledby','sub-diagnosis-title');
   const access=s.access||{},locations=s.locations||[];
   const status=access.allowed===true?'Allowed':access.allowed===false?String(access.reason||'Restricted').replaceAll('_',' '):!s.enabled?'Disabled':'Not reported';
-  dialog.innerHTML=`<header><h2 id="sub-diagnosis-title"><i class="fas fa-stethoscope" aria-hidden="true"></i> Subscription diagnosis</h2><button type="button" data-close aria-label="Close diagnosis">×</button></header><div class="diagnosis-body"><p><strong>${esc(s.name||'Client')}</strong> · Access and usage from the last refresh. Check a peer below to test its connection.</p><dl>${[['Access policy',status],['Data used',fmtBytes(s.used_bytes)],['Data allowance',s.limit_bytes?fmtBytes(s.limit_bytes):'Unlimited'],['Time limit',subscriptionTimeLabel(s)]].map(([k,v])=>`<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl><h3>Attached configurations · ${locations.length}</h3><p>${locations.length?'Check each peer’s interface and connection. These checks do not change settings.':'Attach a configuration from Manage inbounds before checking a connection.'}</p><ul>${locations.map(l=>`<li><span>${esc(l.location_label||l.iface||l.interface||'WireGuard')}<small>${esc(l.node_name||l.scope||'Local panel')}</small></span>${window.WG_PANEL_IS_ADMIN===true&&Number.isInteger(Number(l.peer_id))&&Number(l.peer_id)>0?`<button type="button" data-diagnose-config="${Number(l.peer_id)}">Check peer</button>`:'<small>Peer diagnosis unavailable</small>'}</li>`).join('')}</ul><p class="diagnosis-note">${esc(access.reason==='expired'?'The time limit has ended. Review the client’s time allowance before resetting its timer.':access.reason==='data_exhausted'?'The data allowance is used up. Review the limit before resetting usage.':!s.enabled?'This client is disabled. Review its limits before enabling access.':'Check the attached peers below if the client cannot connect.')}</p><button type="button" data-diagnosis-edit="${Number(s.id)}">Open client limits</button></div>`;
+  dialog.innerHTML=`<header><h2 id="sub-diagnosis-title"><i class="fas fa-stethoscope" aria-hidden="true"></i> Subscription diagnosis</h2><button type="button" data-close aria-label="Close diagnosis">×</button></header><div class="diagnosis-body"><p><strong>${esc(s.name||'Client')}</strong> · Access and usage from the last refresh. Check a peer below to test its connection.</p><dl>${[['Access policy',status],['Data used',fmtBytes(s.used_bytes)],['Data allowance',s.limit_bytes?fmtBytes(s.limit_bytes):'Unlimited'],['Time limit',subscriptionTimeLabel(s)]].map(([k,v])=>`<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl><h3>Attached configurations · ${locations.length}</h3><p>${locations.length?'Check each peer’s interface and connection. These checks do not change settings.':'Attach a configuration from Manage inbounds before checking a connection.'}</p><ul>${locations.map(l=>`<li><span>${esc(l.location_label||l.iface||l.interface||'AmneziaWG')}<small>${esc(l.node_name||l.scope||'Local panel')}</small></span>${window.WG_PANEL_IS_ADMIN===true&&Number.isInteger(Number(l.peer_id))&&Number(l.peer_id)>0?`<button type="button" data-diagnose-config="${Number(l.peer_id)}">Check peer</button>`:'<small>Peer diagnosis unavailable</small>'}</li>`).join('')}</ul><p class="diagnosis-note">${esc(access.reason==='expired'?'The time limit has ended. Review the client’s time allowance before resetting its timer.':access.reason==='data_exhausted'?'The data allowance is used up. Review the limit before resetting usage.':!s.enabled?'This client is disabled. Review its limits before enabling access.':'Check the attached peers below if the client cannot connect.')}</p><button type="button" data-diagnosis-edit="${Number(s.id)}">Open client limits</button></div>`;
   document.body.append(dialog);dialog.querySelector('[data-close]').onclick=()=>dialog.close();
   dialog.addEventListener('click',e=>{if(e.target.closest('[data-diagnosis-edit]')){dialog.close();openDiagnosisClient(s.id);return;}const b=e.target.closest('[data-diagnose-config]');if(b){const peerId=Number(b.dataset.diagnoseConfig);dialog.close();window.dispatchEvent(new CustomEvent('wgpanel:peer-diagnose',{detail:{peerId}}));}});
   window.wgMountDiagnosisActions?.(dialog.querySelector('.diagnosis-body'),{subscription_id:s.id},async()=>{await loadSubs({force:true});const fresh=SUBS.find(x=>String(x.id)===String(s.id));if(fresh){dialog.close();showSubscriptionDiagnosis(fresh);}});
@@ -1207,7 +1207,7 @@ function fillForm(s=null){
   $('#sub-modal-title').innerHTML = s ? '<i class="fas fa-pen"></i> Edit client subscription' : '<i class="fas fa-user-plus"></i> Create client subscription';
   const headHint = $('#sub-modal .subx-modal-head p');
   if(headHint) headHint.textContent = s
-    ? 'Update client details, shared limits, and advanced WireGuard values.'
+    ? 'Update client details, shared limits, and advanced AmneziaWG values.'
     : 'Create a client in one simple form. Only choose a name, limits, and where this client should work.';
   $('#sub-submit').innerHTML = s ? '<i class="fas fa-check"></i> Save changes' : '<i class="fas fa-check"></i> Create subscription';
   if(!s) return;
@@ -1923,20 +1923,20 @@ function subscriptionConnectionPresentation(s){
   const last = api.last_activity_at || active?.last_activity_at || '';
   const where = [scope === 'node' ? (nodeName || 'Node') : (scope === 'local' ? 'Local' : ''), iface].filter(Boolean).join(' / ');
 
-  if(!locs.length) return {cls:'none', label:'No connection', detail:'No configs attached', title:'No WireGuard configs are attached to this client.'};
-  if(runtimeUnavailable) return {cls:'unknown', label:'Status unavailable', detail:'Runtime could not be reached', title:'The panel could not read the attached WireGuard runtime.'};
+  if(!locs.length) return {cls:'none', label:'No connection', detail:'No configs attached', title:'No AmneziaWG configs are attached to this client.'};
+  if(runtimeUnavailable) return {cls:'unknown', label:'Status unavailable', detail:'Runtime could not be reached', title:'The panel could not read the attached AmneziaWG runtime.'};
   if(connected){
     const count = Number(api.connected_count || connectedLocs.length || 1);
     const detail = count > 1
       ? `${count} peers active${peerName ? ` · latest ${peerName}` : ''}${where ? ` · ${where}` : ''}`
       : `${peerName || 'Peer'}${where ? ` · ${where}` : ''}`;
-    return {cls:'connected', label:'Connected', detail, title:`Live WireGuard activity${last ? ` · ${subxExactTime(last)}` : ''}`};
+    return {cls:'connected', label:'Connected', detail, title:`Live AmneziaWG activity${last ? ` · ${subxExactTime(last)}` : ''}`};
   }
   return {
     cls:'disconnected',
     label:'Disconnected',
-    detail:last ? `Last activity ${subxRelativeTime(last)}${peerName ? ` · ${peerName}` : ''}` : 'No recent WireGuard activity',
-    title:last ? `Last WireGuard handshake: ${subxExactTime(last)}` : 'No recent WireGuard handshake was detected.'
+    detail:last ? `Last activity ${subxRelativeTime(last)}${peerName ? ` · ${peerName}` : ''}` : 'No recent AmneziaWG activity',
+    title:last ? `Last AmneziaWG handshake: ${subxExactTime(last)}` : 'No recent AmneziaWG handshake was detected.'
   };
 }
 
@@ -2015,12 +2015,12 @@ function subscriptionCurrentLogState(s){
     return {cls:'disabled', label:'Disabled', icon:'fa-power-off', detail:'The subscription is disabled. Attached configs are not allowed to pass traffic.'};
   }
   if(connection.cls === 'connected'){
-    return {cls:'connected', label:'Connected', icon:'fa-signal', detail:connection.detail || 'Recent WireGuard activity detected.'};
+    return {cls:'connected', label:'Connected', icon:'fa-signal', detail:connection.detail || 'Recent AmneziaWG activity detected.'};
   }
   if(connection.cls === 'unknown'){
-    return {cls:'unknown', label:'Status unavailable', icon:'fa-circle-question', detail:connection.detail || 'WG Panel could not read the WireGuard runtime.'};
+    return {cls:'unknown', label:'Status unavailable', icon:'fa-circle-question', detail:connection.detail || 'WG Panel could not read the AmneziaWG runtime.'};
   }
-  return {cls:'idle', label:'Connection idle', icon:'fa-circle-pause', detail:connection.detail || 'No recent WireGuard activity.'};
+  return {cls:'idle', label:'Connection idle', icon:'fa-circle-pause', detail:connection.detail || 'No recent AmneziaWG activity.'};
 }
 
 function renderSubscriptionCurrentState(s){
@@ -2565,9 +2565,9 @@ function applySettingsToForm(){
   const sup=s.support||{};
   ['telegram','whatsapp','phone','email','website','instagram'].forEach(k=>{const el=document.getElementById('sup-'+k); if(el) el.value=sup[k]||'';});
   const set=(id,val)=>{const el=document.getElementById(id); if(el) el.value=val||'';};
-  set('portal-label',s.portal_label||sup.portal_label||'Secure WireGuard portal');
+  set('portal-label',s.portal_label||sup.portal_label||'Secure AmneziaWG portal');
   set('portal-title',s.portal_title||'');
-  set('portal-subtitle',s.portal_subtitle||'Your access is ready. Install WireGuard, then scan QR or import a config.');
+  set('portal-subtitle',s.portal_subtitle||'Your access is ready. Install AmneziaWG, then scan QR or import a config.');
   set('portal-icon',s.portal_icon||'fas fa-bolt');
   set('portal-animation',s.animation||'rich');
   updateLayoutPreview(layout);
@@ -2593,9 +2593,9 @@ function updateLayoutPreview(layout){
   p.className='preview-card layout-'+(layout||'aurora')+' mode-'+mode;
   const icon=$('#portal-icon')?.value||'fas fa-bolt';
   const pi=p.querySelector('.preview-icon i'); if(pi) pi.className=icon;
-  const label=$('#preview-label'); if(label) label.textContent=$('#portal-label')?.value||'Secure WireGuard portal';
+  const label=$('#preview-label'); if(label) label.textContent=$('#portal-label')?.value||'Secure AmneziaWG portal';
   const title=$('#preview-title'); if(title) title.textContent=$('#portal-title')?.value||'premium-user';
-  const sub=$('#preview-subtitle'); if(sub) sub.textContent=$('#portal-subtitle')?.value||'Install WireGuard, then scan QR or import a config.';
+  const sub=$('#preview-subtitle'); if(sub) sub.textContent=$('#portal-subtitle')?.value||'Install AmneziaWG, then scan QR or import a config.';
 }
 ['portal-label','portal-title','portal-subtitle','portal-icon','portal-animation'].forEach(id=>document.getElementById(id)?.addEventListener('input',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
 document.querySelectorAll('input[name="sub-display-mode"]').forEach(r=>r.addEventListener('change',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
@@ -3178,7 +3178,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
 (() => {
   'use strict';
   const q=(s,r=document)=>r.querySelector(s), qa=(s,r=document)=>[...r.querySelectorAll(s)];
-  const defaults={font_family:'rounded',background_pattern:'none',layout:'ps5',background:'orbits',display_mode:'hybrid',animation:'cinematic',entrance_animation:'stagger',hover_animation:'lift',toast_style:'pill',toast_position:'bottom_center',toast_motion:'slide',toast_duration:2200,accent:'violet',primary_color:'#7661ed',secondary_color:'#63a5ff',online_color:'#568eff',offline_color:'#94a3b8',warning_color:'#f59e0b',danger_color:'#ef4444',pill_color:'#64748b',action_color:'#7661ed',custom_primary:'#7661ed',custom_secondary:'#63a5ff',surface:'glass',radius:'rounded',shadow:'deep',density:'comfortable',page_width:'wide',config_style:'cards',config_columns:'two',section_order:'usage_first',module_order:['configs','usage','install','support'],module_enabled:{configs:true,usage:true,install:true,support:true},module_sizes:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_surface:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_spacing:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_radius:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_heading:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile_position:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_gap:'standard',support_style:'buttons',theme_default:'auto',hero_style:'banner',button_style:'solid',font_scale:'standard',background_intensity:86,card_opacity:82,motion_speed:125,motion_intensity:150,particle_density:90,stat_size:'standard',show_quick_stats:true,show_percentage:true,show_used_detail:true,show_install:true,show_support:true,show_live_badge:true,show_status_badge:true,show_location_country:true,show_download_action:true,show_copy_action:true,show_theme_action:true,show_section_descriptions:true,show_admin_notice:false,notice_title:'Service notice',notice_text:'',notice_tone:'info',notice_style:'banner',notice_position:'after_summary',title_align:'left',logo_size:'medium',portal_label:'Secure WireGuard portal',portal_title:'',portal_subtitle:'Your account is ready. Install WireGuard, then scan QR or import a config.',portal_icon:'fas fa-bolt',usage_title:'Usage overview',configs_title:'Configs',install_title:'Install WireGuard',support_title:'Support',support:{telegram:'',whatsapp:'',phone:'',email:'',website:'',instagram:''}};
+  const defaults={font_family:'rounded',background_pattern:'none',layout:'ps5',background:'orbits',display_mode:'hybrid',animation:'cinematic',entrance_animation:'stagger',hover_animation:'lift',toast_style:'pill',toast_position:'bottom_center',toast_motion:'slide',toast_duration:2200,accent:'violet',primary_color:'#7661ed',secondary_color:'#63a5ff',online_color:'#568eff',offline_color:'#94a3b8',warning_color:'#f59e0b',danger_color:'#ef4444',pill_color:'#64748b',action_color:'#7661ed',custom_primary:'#7661ed',custom_secondary:'#63a5ff',surface:'glass',radius:'rounded',shadow:'deep',density:'comfortable',page_width:'wide',config_style:'cards',config_columns:'two',section_order:'usage_first',module_order:['configs','usage','install','support'],module_enabled:{configs:true,usage:true,install:true,support:true},module_sizes:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_surface:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_spacing:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_radius:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_heading:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile_position:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_gap:'standard',support_style:'buttons',theme_default:'auto',hero_style:'banner',button_style:'solid',font_scale:'standard',background_intensity:86,card_opacity:82,motion_speed:125,motion_intensity:150,particle_density:90,stat_size:'standard',show_quick_stats:true,show_percentage:true,show_used_detail:true,show_install:true,show_support:true,show_live_badge:true,show_status_badge:true,show_location_country:true,show_download_action:true,show_copy_action:true,show_theme_action:true,show_section_descriptions:true,show_admin_notice:false,notice_title:'Service notice',notice_text:'',notice_tone:'info',notice_style:'banner',notice_position:'after_summary',title_align:'left',logo_size:'medium',portal_label:'Secure AmneziaWG portal',portal_title:'',portal_subtitle:'Your account is ready. Install AmneziaWG, then scan QR or import a config.',portal_icon:'fas fa-bolt',usage_title:'Usage overview',configs_title:'Configs',install_title:'Install AmneziaWG',support_title:'Support',support:{telegram:'',whatsapp:'',phone:'',email:'',website:'',instagram:''}};
   const labels={layout:{ps5:'PS5',mac:'macOS',app:'Desktop app',compact:'Compact',minimal:'Minimal',showcase:'Showcase',aurora:'PS5',cards:'macOS',console:'Desktop app',split:'Showcase',profile:'Showcase',executive:'macOS',flow:'Minimal'},background:{aurora:'Aurora',waves:'Waves',network:'Network',orbits:'Orbits',mesh:'Mesh',nebula:'Nebula',lines:'Lines',constellation:'Constellation',prism:'Prism',circuit:'Circuit',pulse:'Pulse',none:'None'},display_mode:{bars:'Progress bars',rings:'Circles',hybrid:'Hybrid',focus:'Large values',minimal:'Compact rows',segments:'Segments'},animation:{cinematic:'Cinematic',immersive:'Immersive',rich:'Rich',balanced:'Balanced',soft:'Soft',drift:'Drift',minimal:'Minimal',off:'Off'},accent:{mint:'Mint',blue:'Blue',violet:'Violet',coral:'Coral',amber:'Amber',mono:'Monochrome',custom:'Custom'}};
   let previewTheme='auto',previewDevice='desktop',previewFit='width',previewPaused=false,previewTimer=0,frameToken=0;
   function radio(name,fallback){return q(`input[name="${name}"]:checked`)?.value||fallback}
@@ -3791,7 +3791,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     const accepted = typeof subConfirm === 'function'
       ? await subConfirm({
           title: 'Delete subscription profile?',
-          body: `Delete “${name}”? This does not delete clients or WireGuard configs.`,
+          body: `Delete “${name}”? This does not delete clients or AmneziaWG configs.`,
           yesText: 'Delete profile',
           noText: 'Cancel',
           danger: true,
@@ -3869,7 +3869,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     const mini=q('#studio92-mini-hero');
     if(mini){mini.dataset.align=checked('sub-title-align','left');mini.dataset.logo=checked('sub-logo-size','medium')}
     const set=(id,val)=>{const el=q(id);if(el)el.textContent=val};
-    set('#studio92-mini-label',(label?.value||'Secure WireGuard portal').trim()||'Secure WireGuard portal');
+    set('#studio92-mini-label',(label?.value||'Secure AmneziaWG portal').trim()||'Secure AmneziaWG portal');
     set('#studio92-mini-title',(title?.value||'premium-user').trim()||'premium-user');
     set('#studio92-mini-subtitle',(subtitle?.value||'Your account is ready.').trim()||'Your account is ready.');
     const miniIcon=q('#studio92-mini-icon');if(miniIcon)miniIcon.className=icon?.value||'fas fa-bolt';
@@ -3883,8 +3883,8 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     emit(identityFields.icon);emit(identityFields.icon,'change');syncIdentity();
   }));
   q('#studio92-copy-default')?.addEventListener('click',()=>{
-    if(identityFields.label)identityFields.label.value='Secure WireGuard portal';
-    if(identityFields.subtitle)identityFields.subtitle.value='Your account is ready. Install WireGuard, then scan QR or import a config.';
+    if(identityFields.label)identityFields.label.value='Secure AmneziaWG portal';
+    if(identityFields.subtitle)identityFields.subtitle.value='Your account is ready. Install AmneziaWG, then scan QR or import a config.';
     emit(identityFields.label);emit(identityFields.subtitle);syncIdentity();
   });
   q('#studio92-title-client')?.addEventListener('click',()=>{

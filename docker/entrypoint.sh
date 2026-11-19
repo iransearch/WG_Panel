@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 cd /app
 umask 077
-mkdir -p /app/instance /etc/wireguard
+mkdir -p /app/instance /etc/amnezia/amneziawg
 
 ROLE="${WG_CONTAINER_ROLE:-panel}"
 PANEL_SECRET_FILE="/app/instance/docker-secrets.env"
@@ -90,7 +90,7 @@ case "$ROLE" in
     export DATABASE_URL="${DATABASE_URL:-sqlite:///instance/wg_panel.db}"
     export LOG_LEVEL="${LOG_LEVEL:-INFO}"
     export SECURE_COOKIES="${SECURE_COOKIES:-0}"
-    export WIREGUARD_CONF_PATH="${WIREGUARD_CONF_PATH:-/etc/wireguard}"
+    export AMNEZIAWG_CONF_PATH="${AMNEZIAWG_CONF_PATH:-/etc/amnezia/amneziawg}"
     export BIND="${BIND:-0.0.0.0:8000}"
     export USE_GUNICORN="${USE_GUNICORN:-1}"
     ;;
@@ -118,7 +118,7 @@ case "$ROLE" in
     [ -n "$saved_api" ] && API_KEY="$saved_api"
     write_agent_secret
 
-    export WIREGUARD_CONF_PATH="${WIREGUARD_CONF_PATH:-/etc/wireguard}"
+    export AMNEZIAWG_CONF_PATH="${AMNEZIAWG_CONF_PATH:-/etc/amnezia/amneziawg}"
     export BIND="${BIND:-0.0.0.0:9898}"
     export USE_GUNICORN="${USE_GUNICORN:-1}"
     ;;

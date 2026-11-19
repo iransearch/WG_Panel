@@ -324,19 +324,19 @@ function formatMessage(x, src, rawMsg, niceMsg){
   let match;
 
   match = raw.match(
-    /^\$?\s*wg-quick\s+up\s+([A-Za-z0-9_.:-]+)$/i
+    /^\$?\s*awg-quick\s+up\s+([A-Za-z0-9_.:-]+)$/i
   );
 
   if (match) {
-    return `Starting WireGuard interface ${match[1]}`;
+    return `Starting AmneziaWG interface ${match[1]}`;
   }
 
   match = raw.match(
-    /^\$?\s*wg-quick\s+down\s+([A-Za-z0-9_.:-]+)$/i
+    /^\$?\s*awg-quick\s+down\s+([A-Za-z0-9_.:-]+)$/i
   );
 
   if (match) {
-    return `Stopping WireGuard interface ${match[1]}`;
+    return `Stopping AmneziaWG interface ${match[1]}`;
   }
 
   match = raw.match(
@@ -344,7 +344,7 @@ function formatMessage(x, src, rawMsg, niceMsg){
   );
 
   if (match) {
-    return `Creating WireGuard interface ${match[1]}`;
+    return `Creating AmneziaWG interface ${match[1]}`;
   }
 
   match = raw.match(
@@ -412,7 +412,7 @@ function formatMessage(x, src, rawMsg, niceMsg){
   }
 
   if (/iptables.*MASQUERADE/i.test(raw)) {
-    return 'Configuring WireGuard internet sharing';
+    return 'Configuring AmneziaWG internet sharing';
   }
 
   if (/net\.ipv4\.ip_forward\s*=\s*1/i.test(raw)) {
@@ -630,7 +630,7 @@ function renderizeRows(rows){
     note.textContent = state.source === 'app' ? 'Panel and API activity'
       : state.source === 'tg_app' ? 'Telegram bot runtime'
       : state.source === 'tg_admin' ? 'Administrator bot actions'
-      : 'WireGuard interface events';
+      : 'AmneziaWG interface events';
   }
 }
 

@@ -116,7 +116,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
 
         elif key == "forwarding":
             severity = "high" if status == "warning" else "low"
-            cause = "Kernel IPv4 forwarding is disabled. The scan only treats this as a problem when local WireGuard hooks appear to route or masquerade peer traffic."
+            cause = "Kernel IPv4 forwarding is disabled. The scan only treats this as a problem when local AmneziaWG hooks appear to route or masquerade peer traffic."
             actions = [action("Open Settings › Interface", "/settings?tab=iface&focus=iface-select&from=operations", "fa-network-wired", "Review the selected interface and its runtime state")]
             steps = [
                 _manual_step("Confirm this host routes peers", "Look for MASQUERADE/FORWARD behavior in the intended interface before changing a kernel-wide setting."),
@@ -125,7 +125,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
                 _manual_step("Verify routing", commands=["sysctl net.ipv4.ip_forward", "ip route", "nft list ruleset 2>/dev/null | sed -n '1,220p'"]),
             ]
             verification = {"text": "Forwarding must read 1 and the intended FORWARD/NAT policy must still be present.", "commands": ["sysctl net.ipv4.ip_forward", "ip route"]}
-            item["when_ok"] = "If this machine only hosts the web panel and never forwards WireGuard traffic, forwarding may intentionally remain disabled."
+            item["when_ok"] = "If this machine only hosts the web panel and never forwards AmneziaWG traffic, forwarding may intentionally remain disabled."
 
         elif key == "env_mode":
             severity = "high" if status == "warning" else "medium"
@@ -154,7 +154,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             cause = "A session-cookie hardening flag in the running Flask configuration is weaker than the panel expects."
             actions = [action("Open Settings › Panel › TLS", "/settings?tab=panel&sub=tls&focus=tls-enabled&from=operations", "fa-lock", "Review the public panel security configuration")]
             steps = [
-                _manual_step("Confirm the running configuration", "These are application session settings, not WireGuard settings.", [f"systemctl show {service} -p Environment -p EnvironmentFiles --no-pager", f"journalctl -u {service} -n 80 --no-pager"]),
+                _manual_step("Confirm the running configuration", "These are application session settings, not AmneziaWG settings.", [f"systemctl show {service} -p Environment -p EnvironmentFiles --no-pager", f"journalctl -u {service} -n 80 --no-pager"]),
                 _manual_step("Correct the application setting", "Use HttpOnly and SameSite=Lax or Strict, restart the correct service, then test login/logout."),
             ]
             verification = {"text": "The next diagnostic should report the session-cookie check as healthy.", "commands": []}
@@ -193,7 +193,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             steps = [
                 _manual_step("Check nftables availability", commands=["nft --version", "nft list ruleset"]),
                 _manual_step("Check the panel service permissions", "Privileges are needed only when kernel-level escalation is enabled.", [f"systemctl show {service} -p User -p Group -p CapabilityBoundingSet -p AmbientCapabilities --no-pager"]),
-                _manual_step("Preserve the existing firewall", "Do not flush the ruleset. Keep SSH, panel, tunnel, WireGuard, and established-connection rules intact."),
+                _manual_step("Preserve the existing firewall", "Do not flush the ruleset. Keep SSH, panel, tunnel, AmneziaWG, and established-connection rules intact."),
             ]
             verification = {"text": "The Security page should report nftables as usable when host-firewall escalation is enabled.", "commands": ["nft --version"]}
             item["when_ok"] = "Application-level HTTP blocking works without kernel firewall escalation when that second layer is intentionally disabled."
@@ -217,7 +217,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             cause = "No recent local automatic backup was found, or the newest backup is older than the recommended window."
             actions = [action("Open Backup", "/backup?from=operations", "fa-box-archive", "Create a full backup and review retention")]
             steps = [
-                _manual_step("Create a full backup", "Use Backup → Full backup and include WireGuard configuration when required."),
+                _manual_step("Create a full backup", "Use Backup → Full backup and include AmneziaWG configuration when required."),
                 _manual_step("Confirm a recent archive exists", commands=[f"find {backups_q} -maxdepth 1 -type f -name '*.zip' -printf '%TY-%Tm-%Td %TH:%TM %10s %p\\n' 2>/dev/null | sort | tail -20"]),
                 _manual_step("Store a copy off-server", "A backup on the same VPS does not protect against disk loss or host compromise."),
             ]
@@ -253,20 +253,20 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
 
         elif key == "listen_ports":
             severity = "high"
-            cause = "Two or more configured local interfaces reuse a WireGuard listen port. That is only valid when they are isolated in separate namespaces."
+            cause = "Two or more configured local interfaces reuse a AmneziaWG listen port. That is only valid when they are isolated in separate namespaces."
             actions = [
                 action("Open Settings › Interface › Listen port", "/settings?tab=iface&focus=i-listen&from=operations", "fa-network-wired", "Select an interface and review its ListenPort value"),
                 action("Open Peers", "/users?from=operations", "fa-users", "Return to interface/peer management"),
             ]
             steps = [
-                _manual_step("Compare configured and active listeners", commands=["wg show", "ss -lnup"]),
+                _manual_step("Compare configured and active listeners", commands=["awg show", "ss -lnup"]),
                 _manual_step("Resolve only real conflicts", "Interfaces active in the same namespace normally require unique listen ports. Change a port only after confirming the collision."),
             ]
-            verification = {"text": "Each simultaneously active interface in the same namespace should have a non-conflicting UDP listen port.", "commands": ["wg show", "ss -lnup"]}
+            verification = {"text": "Each simultaneously active interface in the same namespace should have a non-conflicting UDP listen port.", "commands": ["awg show", "ss -lnup"]}
 
         elif key.startswith("iface_"):
             severity = "high" if "missing" in str(item.get("evidence", "")).lower() else "medium"
-            cause = "The saved local WireGuard interface does not match the expected runtime/configuration state."
+            cause = "The saved local AmneziaWG interface does not match the expected runtime/configuration state."
             iface_id = key.removeprefix("iface_") if key.removeprefix("iface_").isdigit() else ""
             settings_path = f"/settings?tab=iface&focus=iface-up&from=operations{('&iface_id=' + iface_id) if iface_id else ''}"
             actions = [
@@ -274,18 +274,18 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
                 action("Open Peers", "/users?from=operations", "fa-users", "Review this interface together with its peers"),
             ]
             steps = [
-                _manual_step("Inspect the interface", commands=commands[:1] or ["wg show"]),
+                _manual_step("Inspect the interface", commands=commands[:1] or ["awg show"]),
                 _manual_step("Confirm configuration and hooks", "Check Address, ListenPort, PostUp/PostDown, and required firewall/NAT behavior before starting it."),
                 _manual_step("Start and verify", commands=commands[1:] if len(commands) > 1 else []),
             ]
-            verification = {"text": "The intended interface should appear in wg show and its expected UDP listener should be present.", "commands": commands[:1] or ["wg show"]}
+            verification = {"text": "The intended interface should appear in awg show and its expected UDP listener should be present.", "commands": commands[:1] or ["awg show"]}
             item["when_ok"] = "A deliberately disabled interface does not need repair."
 
         elif key == "network_path":
             severity = "high" if status == "warning" else "low"
-            cause = "This is a read-only path readiness summary. It combines WireGuard runtime, gateway forwarding, default routing, firewall tooling, and resolver readiness without sending test traffic or changing the host."
+            cause = "This is a read-only path readiness summary. It combines AmneziaWG runtime, gateway forwarding, default routing, firewall tooling, and resolver readiness without sending test traffic or changing the host."
             actions = [
-                action("Open Peers › Interface", "/users?from=operations", "fa-network-wired", "Review the selected WireGuard interface and peer state"),
+                action("Open Peers › Interface", "/users?from=operations", "fa-network-wired", "Review the selected AmneziaWG interface and peer state"),
                 action("Open Settings › Interface", "/settings?tab=iface&focus=iface-select&from=operations", "fa-sliders", "Review interface networking and hooks"),
             ]
             steps = [
@@ -293,8 +293,8 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
                 _manual_step("Review the matching panel control", "Open the related interface or network setting and correct only the failed condition."),
                 _manual_step("Run verification", "Return to Operations. A fresh verification rebuilds the path readiness result."),
             ]
-            verification = {"text": "All required stages in Network path readiness should report Ready or Not required.", "commands": ["wg show", "ip route show default", "sysctl net.ipv4.ip_forward"]}
-            item["when_ok"] = "Forwarding can legitimately show Not required when this host is not configured as a WireGuard gateway."
+            verification = {"text": "All required stages in Network path readiness should report Ready or Not required.", "commands": ["awg show", "ip route show default", "sysctl net.ipv4.ip_forward"]}
+            item["when_ok"] = "Forwarding can legitimately show Not required when this host is not configured as a AmneziaWG gateway."
 
         elif key in {"nodes", "node_health", "node_version", "node_scope"}:
             severity = "high" if status == "unknown" else "low"
@@ -310,14 +310,14 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
 
         elif key == "ufw_state":
             severity = "low" if status == "review" else "medium"
-            cause = "UFW is active on this host. An active firewall is not a problem by itself, but its rules must allow the panel and intended WireGuard traffic."
+            cause = "UFW is active on this host. An active firewall is not a problem by itself, but its rules must allow the panel and intended AmneziaWG traffic."
             actions = [action("Open Settings › Security › Advanced firewall", "/settings?tab=security&open=http-security-advanced&focus=hs-firewall-enabled&from=operations", "fa-shield-halved", "Review WG Panel firewall integration without replacing host policy")]
             steps = [
                 _manual_step("Review UFW state", "Do not disable the firewall just to clear this advisory.", ["ufw status verbose", "ufw status numbered"]),
-                _manual_step("Confirm required listeners", "Compare active WireGuard/panel listeners with the rules you intentionally allow.", ["ss -lntup", "wg show"]),
+                _manual_step("Confirm required listeners", "Compare active AmneziaWG/panel listeners with the rules you intentionally allow.", ["ss -lntup", "awg show"]),
                 _manual_step("Adjust only the missing rule", "Add or remove a specific rule only after confirming the intended service and source network."),
             ]
-            verification = {"text": "The intended panel and WireGuard services should remain reachable while UFW stays consistent with your policy.", "commands": ["ufw status numbered", "ss -lntup"]}
+            verification = {"text": "The intended panel and AmneziaWG services should remain reachable while UFW stays consistent with your policy.", "commands": ["ufw status numbered", "ss -lntup"]}
             item["when_ok"] = "UFW can stay enabled. This is a review item because firewall policy is deployment-specific."
 
         elif key == "time_sync":
@@ -333,7 +333,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
 
         elif key == "unattended_upgrades":
             severity = "low"
-            cause = "Automatic APT security updates are not confirmed as enabled. This is a host-maintenance choice, not a WireGuard fault."
+            cause = "Automatic APT security updates are not confirmed as enabled. This is a host-maintenance choice, not a AmneziaWG fault."
             steps = [
                 _manual_step("Review the current policy", commands=["systemctl is-enabled unattended-upgrades.service 2>/dev/null || true", "apt-config dump | grep -E 'APT::Periodic|Unattended-Upgrade' | head -80"]),
                 _manual_step("Enable automatic security updates if desired", "Use the distribution-supported unattended-upgrades configuration and review its reboot policy before enabling it.", ["apt-get update", "apt-get install -y unattended-upgrades", "dpkg-reconfigure -plow unattended-upgrades"]),
@@ -347,10 +347,10 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             cause = "The operating system reports that a reboot is pending, usually after a kernel or core-library update."
             steps = [
                 _manual_step("Review why a reboot is pending", commands=["cat /var/run/reboot-required.pkgs 2>/dev/null || true", "uname -r"]),
-                _manual_step("Schedule a maintenance window", "Confirm WireGuard/panel recovery and remote access before rebooting. Do not reboot automatically from Operations."),
-                _manual_step("Verify after reboot", commands=["uptime", "uname -r", "wg show", f"systemctl is-active {service} 2>/dev/null || true"]),
+                _manual_step("Schedule a maintenance window", "Confirm AmneziaWG/panel recovery and remote access before rebooting. Do not reboot automatically from Operations."),
+                _manual_step("Verify after reboot", commands=["uptime", "uname -r", "awg show", f"systemctl is-active {service} 2>/dev/null || true"]),
             ]
-            verification = {"text": "The reboot-required marker should be gone and the intended panel/WireGuard services should be healthy.", "commands": ["test ! -e /var/run/reboot-required && echo 'No reboot pending' || echo 'Reboot still pending'"]}
+            verification = {"text": "The reboot-required marker should be gone and the intended panel/AmneziaWG services should be healthy.", "commands": ["test ! -e /var/run/reboot-required && echo 'No reboot pending' || echo 'Reboot still pending'"]}
 
         elif key == "keepalive_coverage":
             severity = "low"
@@ -359,9 +359,9 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             steps = [
                 _manual_step("Identify peers that actually need keepalive", "Use it mainly for peers behind NAT/firewalls that must remain reachable while idle."),
                 _manual_step("Edit only those peers", "A common value is 25 seconds, but do not apply it globally without a connectivity reason."),
-                _manual_step("Verify handshakes", commands=["wg show"]),
+                _manual_step("Verify handshakes", commands=["awg show"]),
             ]
-            verification = {"text": "Affected peers should maintain the expected handshake/reachability without unnecessary keepalive traffic on every peer.", "commands": ["wg show"]}
+            verification = {"text": "Affected peers should maintain the expected handshake/reachability without unnecessary keepalive traffic on every peer.", "commands": ["awg show"]}
             item["when_ok"] = "PersistentKeepalive is optional and should not be enabled for every peer by default."
 
         elif key == "disk":
@@ -370,7 +370,7 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             actions = [action("Open Backup", "/backup?from=operations", "fa-box-archive", "Protect data before removing old files")]
             steps = [
                 _manual_step("Find the pressure", commands=commands or ["df -hT", "df -ih"]),
-                _manual_step("Remove only reviewed data", "Prefer old logs/backups that have already been copied elsewhere. Never delete the live database or WireGuard configuration to free space."),
+                _manual_step("Remove only reviewed data", "Prefer old logs/backups that have already been copied elsewhere. Never delete the live database or AmneziaWG configuration to free space."),
                 _manual_step("Verify free space", commands=["df -hT", "df -ih"]),
             ]
             verification = {"text": "Free space and inode availability should return to a safe margin.", "commands": ["df -hT", "df -ih"]}
@@ -409,7 +409,7 @@ def network_path_snapshot(app, context):
         for row in rows
     )
 
-    wg = shutil.which("wg")
+    wg = shutil.which("awg")
     active = set()
     if wg:
         try:
@@ -420,7 +420,7 @@ def network_path_snapshot(app, context):
             active = set()
     runtime_ok = bool(active.intersection(names)) if names else True
     stages.append({
-        "id": "wireguard", "label": "WireGuard",
+        "id": "wireguard", "label": "AmneziaWG",
         "state": "ready" if runtime_ok else ("attention" if names else "not_required"),
         "detail": (f"{len(active.intersection(names))} local interface(s) active" if names else "No local interface configured"),
     })
@@ -513,8 +513,8 @@ def collect(app, context):
     check("disk", "Available disk space", disk, "Check access to the panel instance directory and disk usage.", category="storage")
 
     binary_specs = (
-        ("wg", "WireGuard control utility", "wireguard_tools", "Install WireGuard tools"),
-        ("wg-quick", "WireGuard interface helper", "wireguard_tools", "Install WireGuard tools"),
+        ("awg", "AmneziaWG control utility", None, None),
+        ("awg-quick", "AmneziaWG interface helper", None, None),
         ("nft", "nftables utility", "nftables", "Install nftables"),
         ("ip", "iproute utility", "iproute", "Install iproute tools"),
         ("systemctl", "systemd service manager", None, None),
@@ -522,13 +522,15 @@ def collect(app, context):
     for name, title, package_key, repair_label in binary_specs:
         found = shutil.which(name)
         commands = package_install_commands(package_key, host) if package_key and not found else []
+        if not found and name in {"awg", "awg-quick"}:
+            commands = ["sudo bash scripts/install-awg.sh"]
         repair = None
         if package_key and not found and commands:
             repair = _repair(
                 "install_" + package_key,
                 repair_label,
                 risk="low",
-                note="Installs the missing package only; it does not enable a firewall ruleset or rewrite WireGuard configuration.",
+                note="Installs the missing package only; it does not enable a firewall ruleset or rewrite AmneziaWG configuration.",
             )
         add(
             "binary_" + name,
@@ -598,7 +600,7 @@ def collect(app, context):
             "IPv4 forwarding",
             forwarding_status,
             f"net.ipv4.ip_forward = {value}",
-            "WireGuard gateways normally need IPv4 forwarding. Review the FORWARD/nftables policy first, then enable it persistently if this host routes peer traffic.",
+            "AmneziaWG gateways normally need IPv4 forwarding. Review the FORWARD/nftables policy first, then enable it persistently if this host routes peer traffic.",
             None if enabled or not router_expected else _repair(
                 "enable_ipv4_forwarding",
                 "Enable IPv4 forwarding",
@@ -717,10 +719,10 @@ def collect(app, context):
         active = first.lower().startswith("status: active")
         add(
             "ufw_state", "UFW firewall state", "review" if active else "pass",
-            "UFW is active; review intended panel/WireGuard allowances." if active else "UFW is inactive.",
+            "UFW is active; review intended panel/AmneziaWG allowances." if active else "UFW is inactive.",
             "Keep the firewall enabled when it is part of your policy; review only the rules needed by this deployment.",
             category="firewall", commands=["ufw status verbose", "ufw status numbered"],
-            impact="An incorrect host firewall rule can block the panel, WireGuard UDP, or routed peer traffic."
+            impact="An incorrect host firewall rule can block the panel, AmneziaWG UDP, or routed peer traffic."
         )
     check("ufw_state", "UFW firewall state", ufw_state, "Inspect UFW state without changing rules.", category="firewall")
 
@@ -763,7 +765,7 @@ def collect(app, context):
         total = len(local_rows)
         missing = max(0, total - configured)
         status = "review" if total and missing else "pass"
-        add("keepalive_coverage", "PersistentKeepalive coverage", status, f"{configured} of {total} local peers have PersistentKeepalive configured.", "PersistentKeepalive is optional. Review only peers behind NAT/firewalls that must remain reachable while idle.", category="wireguard", commands=["wg show"])
+        add("keepalive_coverage", "PersistentKeepalive coverage", status, f"{configured} of {total} local peers have PersistentKeepalive configured.", "PersistentKeepalive is optional. Review only peers behind NAT/firewalls that must remain reachable while idle.", category="wireguard", commands=["awg show"])
     check("keepalive_coverage", "PersistentKeepalive coverage", keepalive_coverage, "Review local peer PersistentKeepalive configuration.", category="wireguard")
 
     def settings_files():
@@ -857,11 +859,11 @@ def collect(app, context):
         if model is None:
             raise RuntimeError("interface model unavailable")
         rows = model.query.filter_by(node_id=None).all()
-        if not shutil.which("wg"):
+        if not shutil.which("awg"):
             raise RuntimeError("wg unavailable")
-        completed = subprocess.run(["wg", "show", "interfaces"], capture_output=True, text=True, timeout=4, check=False)
+        completed = subprocess.run(["awg", "show", "interfaces"], capture_output=True, text=True, timeout=4, check=False)
         if completed.returncode != 0:
-            raise RuntimeError("wg show failed")
+            raise RuntimeError("awg show failed")
         active = set(completed.stdout.split())
         ports = {}
         for row in rows:
@@ -874,7 +876,7 @@ def collect(app, context):
             f"{duplicates} duplicate listen-port assignment(s) in the database.",
             "Confirm whether interfaces intentionally run in separate namespaces. Simultaneously active interfaces in the same namespace normally need unique listen ports.",
             category="wireguard",
-            commands=["wg show", "ss -lnup"],
+            commands=["awg show", "ss -lnup"],
         )
         for row in rows:
             present = bool(row.path and Path(row.path).is_file())
@@ -883,7 +885,7 @@ def collect(app, context):
             commands = []
             safe_name = str(row.name or "")
             if safe_name and all(ch.isalnum() or ch in "_.-" for ch in safe_name):
-                commands = [f"wg show {safe_name}", f"wg-quick up {safe_name}"]
+                commands = [f"awg show {safe_name}", f"awg-quick up {safe_name}"]
             if present and not online and callable(context.get("_check_iface_up")):
                 repair = _repair(
                     "start_interface",
@@ -917,7 +919,7 @@ def collect(app, context):
             for row in rows
         )
 
-        wg = shutil.which("wg")
+        wg = shutil.which("awg")
         active = set()
         if wg:
             proc = subprocess.run([wg, "show", "interfaces"], capture_output=True, text=True, timeout=4, check=False)
@@ -925,7 +927,7 @@ def collect(app, context):
                 active = set(proc.stdout.split())
         runtime_ok = bool(active.intersection(names)) if names else True
         stages.append({
-            "id": "wireguard", "label": "WireGuard",
+            "id": "wireguard", "label": "AmneziaWG",
             "state": "ready" if runtime_ok else ("attention" if names else "not_required"),
             "detail": (f"{len(active.intersection(names))} local interface(s) active" if names else "No local interface configured"),
         })
@@ -995,12 +997,12 @@ def collect(app, context):
             f"{ready} of {len(stages)} path stages are ready or not required.",
             "Use the path view to identify the first stage that needs attention, then correct only that stage and verify again.",
             category="network",
-            commands=["wg show", "ip route show default", "sysctl net.ipv4.ip_forward", "nft list ruleset 2>/dev/null || ufw status verbose 2>/dev/null || true"],
-            impact="A failed required stage can prevent peers from reaching routed networks even when the WireGuard interface itself is up.",
+            commands=["awg show", "ip route show default", "sysctl net.ipv4.ip_forward", "nft list ruleset 2>/dev/null || ufw status verbose 2>/dev/null || true"],
+            impact="A failed required stage can prevent peers from reaching routed networks even when the AmneziaWG interface itself is up.",
             path_stages=stages,
         )
 
-    check("network_path", "Network path readiness", network_path, "Inspect WireGuard runtime, forwarding, default route, firewall tooling, and resolver readiness.", category="network")
+    check("network_path", "Network path readiness", network_path, "Inspect AmneziaWG runtime, forwarding, default route, firewall tooling, and resolver readiness.", category="network")
 
     add(
         "nodes",
@@ -1025,7 +1027,7 @@ def _sanitize_remote_finding(raw):
         action = str(repair.get("action") or "")
         if action not in {
             "restrict_env", "enable_ipv4_forwarding", "start_interface",
-            "install_wireguard_tools", "install_nftables", "install_iproute",
+            "install_nftables", "install_iproute",
         }:
             repair = None
         else:
@@ -1139,11 +1141,11 @@ def collect_node_report(context, node):
                     "commands": inspect_commands[:1],
                 }
                 if str(item.get("id") or "").startswith("iface_"):
-                    item["cause"] = "The WireGuard configuration exists on the selected node, but its runtime state does not match the expected active state."
+                    item["cause"] = "The AmneziaWG configuration exists on the selected node, but its runtime state does not match the expected active state."
                 elif item.get("id") == "env_mode":
                     item["cause"] = "The node agent environment file is readable by users other than its owner. Secret values were not read by the diagnostic."
                 elif item.get("id") == "network_path":
-                    item["cause"] = "The selected node reported its own WireGuard, forwarding, route, firewall and resolver readiness. No test traffic was sent."
+                    item["cause"] = "The selected node reported its own AmneziaWG, forwarding, route, firewall and resolver readiness. No test traffic was sent."
         return {"system": profile, "checks": enriched, "legacy": False}
     except Exception:
         results = []
@@ -1174,7 +1176,7 @@ def collect_node_report(context, node):
         results.append(finding(
             "node_scope", "Remote diagnostic coverage", "review",
             "This node agent does not expose the v16 Operations diagnostic endpoint.",
-            "Update the node agent to unlock host-local WireGuard, forwarding, route, firewall, DNS, disk, time and rollback-aware repair checks.",
+            "Update the node agent to unlock host-local AmneziaWG, forwarding, route, firewall, DNS, disk, time and rollback-aware repair checks.",
             category="nodes",
         ))
         profile = {

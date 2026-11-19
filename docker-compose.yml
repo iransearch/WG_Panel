@@ -7,6 +7,8 @@ services:
     container_name: wg-panel
     restart: unless-stopped
     network_mode: host
+    devices:
+      - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -17,7 +19,7 @@ services:
       BIND: "${WG_PANEL_BIND:-0.0.0.0:8000}"
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       SECURE_COOKIES: "${SECURE_COOKIES:-0}"
-      WIREGUARD_CONF_PATH: /etc/wireguard
+      AMNEZIAWG_CONF_PATH: /etc/amnezia/amneziawg
       DATABASE_URL: "${DATABASE_URL:-sqlite:///instance/wg_panel.db}"
       FLASK_SECRET_KEY: "${FLASK_SECRET_KEY:-}"
       FERNET_KEY: "${FERNET_KEY:-}"
@@ -29,7 +31,7 @@ services:
       WG_ONLINE_HANDSHAKE_WINDOW: "${WG_ONLINE_HANDSHAKE_WINDOW:-45}"
     volumes:
       - wg_panel_instance:/app/instance
-      - /etc/wireguard:/etc/wireguard
+      - /etc/amnezia/amneziawg:/etc/amnezia/amneziawg
       - /lib/modules:/lib/modules:ro
     stop_grace_period: 30s
 
@@ -66,6 +68,8 @@ services:
     restart: unless-stopped
     network_mode: host
     profiles: ["node"]
+    devices:
+      - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
       - NET_RAW
@@ -75,13 +79,13 @@ services:
       DOCKER_MODE: "1"
       BIND: "${WG_NODE_BIND:-0.0.0.0:9898}"
       API_KEY: "${NODE_API_KEY:-}"
-      WIREGUARD_CONF_PATH: /etc/wireguard
+      AMNEZIAWG_CONF_PATH: /etc/amnezia/amneziawg
       WG_ONLINE_PROBE_FIRST: "${WG_ONLINE_PROBE_FIRST:-1}"
       WG_ONLINE_HANDSHAKE_FALLBACK: "${WG_ONLINE_HANDSHAKE_FALLBACK:-0}"
       WG_ONLINE_HANDSHAKE_WINDOW: "${WG_ONLINE_HANDSHAKE_WINDOW:-45}"
     volumes:
       - wg_node_agent_instance:/app/instance
-      - /etc/wireguard:/etc/wireguard
+      - /etc/amnezia/amneziawg:/etc/amnezia/amneziawg
       - /lib/modules:/lib/modules:ro
     stop_grace_period: 30s
 

@@ -57,11 +57,11 @@ def build_health_center(context: dict[str, Any], *, now_ts: int | None = None) -
         rows = InterfaceConfig.query.filter_by(node_id=None).all() if InterfaceConfig is not None else []
         count = len(rows)
         if count:
-            items.append(_item("wireguard", "Local WireGuard", "healthy", f"{count} local interface{'s' if count != 1 else ''} configured.", detail="Use Peers or Operations for runtime state and repair.", href="/users"))
+            items.append(_item("wireguard", "Local AmneziaWG", "healthy", f"{count} local interface{'s' if count != 1 else ''} configured.", detail="Use Peers or Operations for runtime state and repair.", href="/users"))
         else:
-            items.append(_item("wireguard", "Local WireGuard", "review", "No local WireGuard interface is configured.", detail="This is valid for a node-only deployment.", href="/users"))
+            items.append(_item("wireguard", "Local AmneziaWG", "review", "No local AmneziaWG interface is configured.", detail="This is valid for a node-only deployment.", href="/users"))
     except Exception:
-        items.append(_item("wireguard", "Local WireGuard", "unknown", "Interface inventory could not be read.", href="/operations"))
+        items.append(_item("wireguard", "Local AmneziaWG", "unknown", "Interface inventory could not be read.", href="/operations"))
 
     # Nodes 
     try:

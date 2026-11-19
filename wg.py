@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import tempfile
 import urllib.request
+import runpy
 import zipfile
 
 
@@ -73,7 +74,8 @@ TAG_ERR  = "[ERROR]"
 TAG_RUN  = "[RUN]"
 
 
-REPO_URL = "https://github.com/Azumi67/WG_Panel"
+REPO_URL = "https://github.com/iransearch/WG_Panel"
+REPO_REF = "feature/amneziawg"
 REPO_DIRNAME_DEFAULT = "WG_Panel"
 
 
@@ -556,8 +558,6 @@ APT_PACKAGES = [
     "libffi-dev",
     "libssl-dev",
 
-    "wireguard",
-    "wireguard-tools",
     "iptables",
     "nftables",
 ]
@@ -797,7 +797,7 @@ def clone_repo() -> bool:
             pause()
             return False
 
-    rc = _live(["git", "clone", REPO_URL, str(target)], "git clone")
+    rc = _live(["git", "clone", "--branch", REPO_REF, REPO_URL, str(target)], "git clone")
     if rc == 0 and (target / "app.py").is_file() and (target / "requirements.txt").is_file():
         set_project(target)
         ok(f"Project root set: {_paths(str(target))}")
@@ -875,12 +875,12 @@ def wg_dir(root: Optional[Path] = None) -> Path:
 
     if root is not None:
         env = _read_env(root / ".env")
-        raw = (env.get("WIREGUARD_CONF_PATH") or "").strip()
+        raw = (env.get("AMNEZIAWG_CONF_PATH") or "").strip()
         if raw:
             raw = raw.split("#", 1)[0].strip()
 
 
-    return Path("/etc/wireguard")
+    return Path("/etc/amnezia/amneziawg")
 
 def _list_confs(conf_dir: Path) -> List[Path]:
     try:
@@ -901,22 +901,17 @@ def _default_iface() -> str:
         pass
     return "eth0"
 
-def _wg_path() -> str:
-
-    if Path("/usr/bin/wg").exists():
-        return "/usr/bin/wg"
-
-    p = shutil.which("wg") or ""
-    if p.strip() == "/usr/local/bin/wg" and Path("/usr/bin/wg").exists():
-        return "/usr/bin/wg"
-    return p or ""
+def _install_awg(root: Path) -> bool:
+    if all(_cmd(binary) for binary in ("awg", "awg-quick", "amneziawg-go")):
+        return True
+    return _live(["bash", str(root / "scripts/install-awg.sh")], "Install AmneziaWG 3.1", timeout=900) == 0
 
 
 def _wg_keypair() -> Tuple[str, str]:
 
-    wg_bin = _wg_path()
+    wg_bin = shutil.which("awg")
     if not wg_bin:
-        raise RuntimeError("wg not found (install wireguard-tools)")
+        raise RuntimeError("awg not found (run scripts/install-awg.sh)")
 
     def pub_from_priv(priv: str) -> str:
         p2 = subprocess.run(
@@ -927,10 +922,10 @@ def _wg_keypair() -> Tuple[str, str]:
             timeout=8,
         )
         if p2.returncode != 0:
-            raise RuntimeError((p2.stderr or p2.stdout or "wg pubkey failed").strip())
+            raise RuntimeError((p2.stderr or p2.stdout or "awg pubkey failed").strip())
         pub = (p2.stdout or "").strip()
         if not pub:
-            raise RuntimeError("wg pubkey returned empty output")
+            raise RuntimeError("awg pubkey returned empty output")
         return pub
 
     try:
@@ -942,13 +937,13 @@ def _wg_keypair() -> Tuple[str, str]:
     except subprocess.TimeoutExpired:
         pass
 
-    warn("Low entropy or wg genkey stalled. Using /dev/urandom fallback.")
-    key_bytes = Path("/dev/urandom").read_bytes()[:32]
+    warn("Low entropy or awg genkey stalled. Using /dev/urandom fallback.")
+    key_bytes = secrets.token_bytes(32)
     priv = base64.b64encode(key_bytes).decode("ascii")
     return priv, pub_from_priv(priv)
     
 def _wireguard_ipv4_network(address: str) -> str:
-    """Return the first private IPv4 network from a WireGuard Address value."""
+    """Return the first private IPv4 network from a AmneziaWG Address value."""
     for raw in re.split(r"[\s,]+", str(address or "").strip()):
         if not raw or "/" not in raw:
             continue
@@ -962,6 +957,7 @@ def _wireguard_ipv4_network(address: str) -> str:
 
 
 def __wg_serverconf(
+    root: Path,
     iface: str,
     address: str,
     listen_port: int,
@@ -977,6 +973,8 @@ def __wg_serverconf(
         f"ListenPort = {listen_port}",
         f"PrivateKey = {privkey}",
     ]
+    config_tools = runpy.run_path(str(root / "agent/awg_config.py"))
+    lines.extend(config_tools["new_interface_lines"]())
 
     if (
         enable_nat
@@ -991,7 +989,7 @@ def __wg_serverconf(
         if not network:
             raise ValueError(
                 "NAT requires at least one "
-                "private IPv4 WireGuard address."
+                "private IPv4 AmneziaWG address."
             )
 
         if not re.fullmatch(
@@ -1139,7 +1137,7 @@ def _sysctl_forwarding(enable_ipv6: bool = False) -> bool:
 
 def wireguard_setup(root: Optional[Path] = None):
     if not isitroot():
-        err("Run with sudo to create WireGuard configs and start wg-quick.")
+        err("Run with sudo to create AmneziaWG configs and start awg-quick.")
         pause()
         return
     if not _debian():
@@ -1147,7 +1145,10 @@ def wireguard_setup(root: Optional[Path] = None):
         return
 
     clear()
-    header("WireGuard Setup", "create / edit interface config")
+    header("AmneziaWG Setup", "create / edit interface config")
+    if not _install_awg(root or get_project()):
+        pause()
+        return
     conf_dir = wg_dir(root)
     print(box("Location", [
     f"{c('Config directory:', BR_WHT)} {c(_paths(str(conf_dir)), BR_CYN)}",
@@ -1158,7 +1159,7 @@ def wireguard_setup(root: Optional[Path] = None):
         try:
             conf_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
-            err("Cannot create WireGuard directory.")
+            err("Cannot create AmneziaWG directory.")
             pause()
             return
 
@@ -1179,25 +1180,30 @@ def wireguard_setup(root: Optional[Path] = None):
         lines.append("")
         lines.append(f"  {c('N)', BR_GRN)} Create a new config")
 
-    print(box("WireGuard Interfaces", lines, border_color=BR_GRN))
+    print(box("AmneziaWG Interfaces", lines, border_color=BR_GRN))
 
     sel = ask("Select (number or N)", default="N", show_default=True).strip().lower()
 
     iface = ""
     if sel in ("n", "new"):
-        iface = ask("New interface name", default="wg0", show_default=True).strip() or "wg0"
+        iface = ask("New interface name", default="awg0", show_default=True).strip() or "awg0"
     elif sel.isdigit() and existing:
         idx = int(sel)
         if 1 <= idx <= len(existing):
             iface = existing[idx - 1]
         else:
             warn("Invalid selection. Using new config.")
-            iface = ask("New interface name", default="wg0", show_default=True).strip() or "wg0"
+            iface = ask("New interface name", default="awg0", show_default=True).strip() or "awg0"
     else:
         if sel and sel not in ("n", "new"):
             iface = sel
         else:
-            iface = "wg0"
+            iface = "awg0"
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", iface) or iface in {".", ".."}:
+        err("Interface names must contain 1–15 letters, digits, dots, underscores or hyphens.")
+        pause()
+        return
 
     conf_path = conf_dir / f"{iface}.conf"
 
@@ -1212,7 +1218,7 @@ def wireguard_setup(root: Optional[Path] = None):
 
     enable_ipv6_fwd = confirm("Enable IPv6 forwarding rules too (if you use IPv6)?", default_yes=False)
     print()
-    info("Generating WireGuard keys...")
+    info("Generating AmneziaWG keys...")
     sys.stdout.flush()
 
     try:
@@ -1223,6 +1229,7 @@ def wireguard_setup(root: Optional[Path] = None):
         return
 
     conf_text = __wg_serverconf(
+        root=root or get_project(),
         iface=iface,
         address=address,
         listen_port=int(listen_port),
@@ -1236,7 +1243,7 @@ def wireguard_setup(root: Optional[Path] = None):
     print(box("Ready", [
         c("Server PublicKey (share with clients):", BR_WHT) + " " + c(pub, BR_GRN),
         c("Config path:", BR_WHT) + " " + c(_paths(str(conf_path)), BR_CYN),
-        c("Action:", BR_WHT) + " " + c("Create/Update WireGuard config", BR_YEL),
+        c("Action:", BR_WHT) + " " + c("Create/Update AmneziaWG config", BR_YEL),
     ], border_color=BR_CYN))
 
     if conf_path.exists() and not confirm("File exists. Overwrite?", default_yes=False):
@@ -1265,13 +1272,13 @@ def wireguard_setup(root: Optional[Path] = None):
         else:
             warn("Could not apply sysctl forwarding automatically.")
 
-    if confirm("Enable + start this interface now (wg-quick@...)?", default_yes=True):
+    if confirm("Enable + start this interface now (awg-quick@...)?", default_yes=True):
         if _cmd("systemctl"):
             _live(["systemctl", "daemon-reload"], "systemd daemon-reload")
-            _live(["systemctl", "enable", "--now", f"wg-quick@{iface}"], f"systemctl enable --now wg-quick@{iface}")
-            _live(["systemctl", "status", "--no-pager", "-l", f"wg-quick@{iface}"], f"Status wg-quick@{iface}")
+            _live(["systemctl", "enable", "--now", f"awg-quick@{iface}"], f"systemctl enable --now awg-quick@{iface}")
+            _live(["systemctl", "status", "--no-pager", "-l", f"awg-quick@{iface}"], f"Status awg-quick@{iface}")
         else:
-            _live(["wg-quick", "up", iface], f"wg-quick up {iface}")
+            _live(["awg-quick", "up", str(conf_path.resolve())], f"awg-quick up {iface}")
 
     pause()
 
@@ -1298,7 +1305,7 @@ def wireguard_edit(root: Optional[Path] = None):
     while True:
         conf_dir = wg_dir(root)
         clear()
-        header("WireGuard Config", str(conf_dir))
+        header("AmneziaWG Config", str(conf_dir))
 
         confs = []
         try:
@@ -1322,7 +1329,7 @@ def wireguard_edit(root: Optional[Path] = None):
             lines.append(c("No .conf files found.", DIM))
         lines.append("")
         lines.append(c("0) Back", DIM))
-        print(box("WireGuard", lines, border_color=BR_YEL))
+        print(box("AmneziaWG", lines, border_color=BR_YEL))
 
         ch = _menu_input()
         if ch == "1":
@@ -1332,7 +1339,7 @@ def wireguard_edit(root: Optional[Path] = None):
                 warn("No configs to edit.")
                 time.sleep(0.35)
                 continue
-            name = ask("Config filename to edit (e.g. wg0.conf)", default=confs[0].name).strip()
+            name = ask("Config filename to edit (e.g. awg0.conf)", default=confs[0].name).strip()
             if not name:
                 continue
             p = conf_dir / name
@@ -1405,7 +1412,7 @@ def _env_text(values: Dict[str, str]) -> str:
 
     lines.append(f"LOG_LEVEL={g('LOG_LEVEL','INFO')}")
     lines.append(f"SECURE_COOKIES={g('SECURE_COOKIES','1')}")
-    lines.append(f"WIREGUARD_CONF_PATH={g('WIREGUARD_CONF_PATH','/etc/wireguard')}")
+    lines.append(f"AMNEZIAWG_CONF_PATH={g('AMNEZIAWG_CONF_PATH','/etc/amnezia/amneziawg')}")
     lines.append("")
 
     lines.append("# Live peer detection")
@@ -1430,7 +1437,7 @@ def env_setup(root: Path):
     vals["DATABASE_URL"] = existing.get("DATABASE_URL") or "sqlite:///instance/wg_panel.db"
     vals["LOG_LEVEL"] = (existing.get("LOG_LEVEL") or "INFO").upper()
     vals["SECURE_COOKIES"] = existing.get("SECURE_COOKIES") or "1"
-    vals["WIREGUARD_CONF_PATH"] = existing.get("WIREGUARD_CONF_PATH") or "/etc/wireguard"
+    vals["AMNEZIAWG_CONF_PATH"] = existing.get("AMNEZIAWG_CONF_PATH") or "/etc/amnezia/amneziawg"
 
     vals["WG_ONLINE_PROBE_FIRST"] = existing.get("WG_ONLINE_PROBE_FIRST") or "1"
     vals["WG_ONLINE_HANDSHAKE_FALLBACK"] = existing.get("WG_ONLINE_HANDSHAKE_FALLBACK") or "0"
@@ -1451,7 +1458,7 @@ def env_setup(root: Path):
     print(box("Variable hints", [
         c("LOG_LEVEL", BR_CYN) + c(" → ", DIM) + c("DEBUG | INFO | WARNING | ERROR", BR_WHT),
         c("SECURE_COOKIES", BR_CYN) + c(" → ", DIM) + c("1=HTTPS/prod, 0=dev", BR_WHT),
-        c("WIREGUARD_CONF_PATH", BR_CYN) + c(" → ", DIM) + c("folder or single .conf path", BR_WHT),
+        c("AMNEZIAWG_CONF_PATH", BR_CYN) + c(" → ", DIM) + c("folder or single .conf path", BR_WHT),
         c("SETUP_TOKEN", BR_CYN) + c(" → ", DIM) + c("optional gate for /register", BR_WHT),
         c("TG_HEARTBEAT_SEC", BR_CYN) + c(" → ", DIM) + c("bot heartbeat window seconds", BR_WHT),
     ], border_color=BR_CYN))
@@ -1462,7 +1469,7 @@ def env_setup(root: Path):
     vals["DATABASE_URL"] = ask("DATABASE_URL", default=vals["DATABASE_URL"], show_default=True)
     vals["LOG_LEVEL"] = ask("LOG_LEVEL", default=vals["LOG_LEVEL"], show_default=True).upper()
     vals["SECURE_COOKIES"] = ask("SECURE_COOKIES", default=vals["SECURE_COOKIES"], show_default=True)
-    vals["WIREGUARD_CONF_PATH"] = ask("WIREGUARD_CONF_PATH", default=vals["WIREGUARD_CONF_PATH"], show_default=True)
+    vals["AMNEZIAWG_CONF_PATH"] = ask("AMNEZIAWG_CONF_PATH", default=vals["AMNEZIAWG_CONF_PATH"], show_default=True)
 
     vals["WG_ONLINE_PROBE_FIRST"] = ask("WG_ONLINE_PROBE_FIRST", default=vals["WG_ONLINE_PROBE_FIRST"], show_default=True)
     vals["WG_ONLINE_HANDSHAKE_FALLBACK"] = ask("WG_ONLINE_HANDSHAKE_FALLBACK", default=vals["WG_ONLINE_HANDSHAKE_FALLBACK"], show_default=True)
@@ -2357,7 +2364,11 @@ def install_everything():
             pause()
             return
 
-    root = get_project()  
+    root = get_project()
+    if not _install_awg(root):
+        err("AmneziaWG installation failed.")
+        pause()
+        return
 
     if confirm("Step 3: Create venv + pip install?", True):
         _venv_requirements(root)
@@ -2366,7 +2377,7 @@ def install_everything():
     if confirm("Step 4: Create/Update .env?", True):
         env_setup(root)
 
-    if confirm("Step 4b: Setup WireGuard interface now (create .conf + NAT)?", False):
+    if confirm("Step 4b: Setup AmneziaWG interface now (create .conf + NAT)?", False):
         wireguard_setup(get_project())
 
     if confirm("Step 5: Create/Update panel_settings.json?", True):
@@ -2407,7 +2418,7 @@ def edit_env(root: Path):
     values.setdefault("DATABASE_URL", "sqlite:///instance/wg_panel.db")
     values.setdefault("LOG_LEVEL", "INFO")
     values.setdefault("SECURE_COOKIES", "1")
-    values.setdefault("WIREGUARD_CONF_PATH", "/etc/wireguard")
+    values.setdefault("AMNEZIAWG_CONF_PATH", "/etc/amnezia/amneziawg")
     values.setdefault("SETUP_TOKEN", "")
     values.setdefault("TG_HEARTBEAT_SEC", "60")
 
@@ -2427,7 +2438,7 @@ def edit_env(root: Path):
             f"{c('4)', BR_CYN)} DATABASE_URL",
             f"{c('5)', BR_CYN)} LOG_LEVEL",
             f"{c('6)', BR_CYN)} SECURE_COOKIES",
-            f"{c('7)', BR_CYN)} WIREGUARD_CONF_PATH",
+            f"{c('7)', BR_CYN)} AMNEZIAWG_CONF_PATH",
             f"{c('8)', BR_CYN)} SETUP_TOKEN",
             f"{c('9)', BR_CYN)} TG_HEARTBEAT_SEC",
             "",
@@ -2476,7 +2487,7 @@ def edit_env(root: Path):
             "4": "DATABASE_URL",
             "5": "LOG_LEVEL",
             "6": "SECURE_COOKIES",
-            "7": "WIREGUARD_CONF_PATH",
+            "7": "AMNEZIAWG_CONF_PATH",
             "8": "SETUP_TOKEN",
             "9": "TG_HEARTBEAT_SEC",
         }
@@ -2660,7 +2671,7 @@ def install_menu():
             c("  4) Git clone + set project directory", BR_CYN),
             c("  5) Install system requirements (apt)", BR_CYN),
             c("  6) Create venv + pip install requirements.txt", BR_CYN),
-            c("  7)  WireGuard: create/update .conf ", BR_CYN),
+            c("  7)  AmneziaWG: create/update .conf ", BR_CYN),
             "",
             c("CONFIG", BR_BLU),
             c("  8) Create/Update .env", BR_BLU),
@@ -2722,7 +2733,7 @@ def edit_menu():
             c("2) Edit panel_settings.json", BR_CYN),
             c("3) Edit runtime.json", BR_CYN),
             c("4) Edit telegram_settings.json", BR_CYN),
-            c("5) WireGuard configs (edit existing / add new)", BR_CYN),
+            c("5) AmneziaWG configs (edit existing / add new)", BR_CYN),
             "",
             c("0) Back", DIM),
         ]
@@ -3569,7 +3580,7 @@ def _github_json(url: str, timeout: int = 20):
 def _github_panel_releases() -> List[dict]:
     data = _github_json(
         "https://api.github.com/repos/"
-        "Azumi67/WG_Panel/releases?per_page=40"
+        "iransearch/WG_Panel/releases?per_page=40"
     )
 
     if not isinstance(data, list):
@@ -3590,7 +3601,7 @@ def _github_panel_releases() -> List[dict]:
             continue
 
         zip_url = (
-            "https://github.com/Azumi67/WG_Panel/"
+            "https://github.com/iransearch/WG_Panel/"
             f"archive/refs/tags/{tag}.zip"
         )
 
@@ -3875,7 +3886,7 @@ def update_project(root: Path):
                 "--depth",
                 "1",
                 "--branch",
-                "main",
+                REPO_REF,
                 REPO_URL,
                 str(source),
             ],
@@ -3885,7 +3896,7 @@ def update_project(root: Path):
 
         if rc != 0:
             raise RuntimeError(
-                "Could not download the latest main branch."
+                "Could not download the AmneziaWG branch."
             )
 
         if not _sync_project_code(source, root):
@@ -4101,7 +4112,7 @@ def _disable_remove_service(name: str):
 
 def wg_cleanup_confs(root: Path, delete_confs: bool = False) -> int:
 
-    conf_dir = Path("/etc/wireguard")
+    conf_dir = Path("/etc/amnezia/amneziawg")
     confs = []
     try:
         if conf_dir.exists():
@@ -4110,17 +4121,17 @@ def wg_cleanup_confs(root: Path, delete_confs: bool = False) -> int:
         confs = []
 
     if not confs:
-        warn(f"No WireGuard configs found in {_paths(str(conf_dir))}.")
+        warn(f"No AmneziaWG configs found in {_paths(str(conf_dir))}.")
         return 0
 
     for conf in confs:
         iface = conf.stem
 
-        if _cmd("wg-quick"):
-            _quick_bar(["wg-quick", "down", iface], f"wg-quick down {iface}")
+        if _cmd("awg-quick"):
+            _quick_bar(["awg-quick", "down", iface], f"awg-quick down {iface}")
 
         if _cmd("systemctl"):
-            _quick_bar(["systemctl", "disable", "--now", f"wg-quick@{iface}.service"], f"Disable wg-quick@{iface}")
+            _quick_bar(["systemctl", "disable", "--now", f"awg-quick@{iface}.service"], f"Disable awg-quick@{iface}")
 
         if delete_confs:
             try:
@@ -4148,7 +4159,7 @@ def uninstall_menu():
             c("  4) Remove venv only", BR_YEL),
             c("  5) Remove instance configs only (instance/*.json)", BR_YEL),
             c("  6) Clear saved root marker (~/.wg_panel_root.json)", BR_YEL),
-            c("  7) WireGuard cleanup (bring down + disable; optional delete confs)", BR_YEL),
+            c("  7) AmneziaWG cleanup (bring down + disable; optional delete confs)", BR_YEL),
             "",
             c("  0) Back", DIM),
         ]
@@ -4161,17 +4172,17 @@ def uninstall_menu():
 
         if ch == "7":
             if not isitroot():
-                err("WireGuard cleanup requires sudo.")
+                err("AmneziaWG cleanup requires sudo.")
                 pause()
                 continue
 
-            if confirm("Bring down all wg-quick interfaces and disable wg-quick@ units?", True):
-                delete_confs = confirm("Also delete /etc/wireguard/*.conf files?", False)
+            if confirm("Bring down all awg-quick interfaces and disable awg-quick@ units?", True):
+                delete_confs = confirm("Also delete /etc/amnezia/amneziawg/*.conf files?", False)
                 wg_cleanup_confs(root, delete_confs=delete_confs)
                 if delete_confs:
-                    ok("WireGuard interfaces + configs removed.")
+                    ok("AmneziaWG interfaces + configs removed.")
                 else:
-                    ok("WireGuard interfaces stopped/disabled (configs kept).")
+                    ok("AmneziaWG interfaces stopped/disabled (configs kept).")
             pause()
             continue
 
@@ -4247,8 +4258,8 @@ def uninstall_menu():
                 _disable_remove_service("wg-panel.service")
                 _disable_remove_service("wg-panel-bot.service")
 
-            if confirm("Also clean WireGuard (bring down interfaces + disable units)?", False):
-                delete_confs = confirm("Also delete /etc/wireguard/*.conf files?", False)
+            if confirm("Also clean AmneziaWG (bring down interfaces + disable units)?", False):
+                delete_confs = confirm("Also delete /etc/amnezia/amneziawg/*.conf files?", False)
                 wg_cleanup_confs(root, delete_confs=delete_confs)
 
             if root.exists():
@@ -4281,33 +4292,6 @@ def _already_installed(target: Path, script_path: Path) -> bool:
     except Exception:
         return True  
     return str(script_path) in txt
-
-
-def _wg_binary():
-
-    try:
-        p = Path("/usr/local/bin/wg")
-        if not p.exists():
-            return
-        txt = ""
-        try:
-            txt = p.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            return
-
-        script_path = str(Path(__file__).resolve())
-        if script_path in txt:
-            bak = Path("/usr/local/bin/wgpanel-legacy-wg-wrapper")
-            try:
-                if bak.exists():
-                    bak.unlink()
-                p.rename(bak)
-                warn("Detected poisoned /usr/local/bin/wg (wrapper). Moved to wgpanel-legacy-wg-wrapper.")
-                warn("WireGuard `wg` will now use the real binary (usually /usr/bin/wg).")
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 
 def _wgpanel_command(root: Path):
@@ -4351,7 +4335,7 @@ def main_menu():
     while True:
         root = get_project()
         clear()
-        print(c("WG Panel Control", BR_WHT + BOLD) + "  " + c("Azumi67/WG_Panel", BR_CYN))
+        print(c("WG Panel Control", BR_WHT + BOLD) + "  " + c("iransearch/WG_Panel", BR_CYN))
         print(hr("═", BR_CYN))
         print(render_status(root))
         print()
@@ -4390,7 +4374,6 @@ def main_menu():
 if __name__ == "__main__":
     root = get_project()
 
-    _wg_binary()
     _wgpanel_command(root)
     preclone()
     main_menu()

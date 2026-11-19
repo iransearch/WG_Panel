@@ -5,7 +5,7 @@ BOOTSTRAP_DIR="${WG_BOOTSTRAP_DIR:-${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}/wg-pa
 VENV_DIR="${VENV_DIR:-$BOOTSTRAP_DIR/venv}"
 PY="$VENV_DIR/bin/python"
 
-DEFAULT_WG_URL="https://raw.githubusercontent.com/Azumi67/WG_Panel/refs/heads/main/wg.py"
+DEFAULT_WG_URL="https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/wg.py"
 
 APT_PKGS=(
   sudo
@@ -25,8 +25,6 @@ APT_PKGS=(
   pkg-config
   libffi-dev
   libssl-dev
-  wireguard
-  wireguard-tools
   iproute2
   iptables
   procps
@@ -53,7 +51,7 @@ Examples:
   sudo $0
   sudo $0 --force-fetch
   sudo $0 --wg-py /root/wg.py
-  sudo $0 https://raw.githubusercontent.com/Azumi67/WG_Panel/refs/heads/main/wg.py
+  sudo $0 https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/wg.py
   sudo $0 -- --no-color
 EOF
 }
@@ -137,7 +135,7 @@ install_stuff() {
   local missing=()
   local cmd
 
-  for cmd in python3 git curl rsync unzip wg ip iptables; do
+  for cmd in python3 git curl rsync unzip ip iptables; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       missing+=("$cmd")
     fi

@@ -14,6 +14,11 @@ import subprocess, os
 import requests
 import hmac
 
+if __package__:
+    from .awg_config import new_interface_lines, read_parameters
+else:
+    from awg_config import new_interface_lines, read_parameters
+
 try:
     from dotenv import load_dotenv
     _here = os.path.dirname(os.path.abspath(__file__))
@@ -22,7 +27,7 @@ except Exception:
     pass
 
 API_KEY = os.environ.get('API_KEY','') 
-WG_CONF_PATH = os.environ.get('WIREGUARD_CONF_PATH','/etc/wireguard')
+WG_CONF_PATH = os.environ.get('AMNEZIAWG_CONF_PATH','/etc/amnezia/amneziawg')
 
 app = Flask(__name__)
 
@@ -190,7 +195,7 @@ def _extract_wgip(iface_name: str, target_net: ipa._BaseNetwork) -> set:
     used = set()
     try:
         out = subprocess.check_output(
-            ['wg', 'show', iface_name, 'allowed-ips'],
+            ['awg', 'show', iface_name, 'allowed-ips'],
             stderr=subprocess.DEVNULL, timeout=2.0
         ).decode()
         for line in out.splitlines():
@@ -276,7 +281,7 @@ def _pubkey_from_priv(priv):
         return ''
     try:
         out = subprocess.check_output(
-            ['wg', 'pubkey'],
+            ['awg', 'pubkey'],
             input=(priv + '\n').encode(),
             stderr=subprocess.DEVNULL,
             timeout=2.0,
@@ -292,7 +297,7 @@ def _iface_live_public_key(name):
         return ''
     try:
         out = subprocess.check_output(
-            ['wg', 'show', name, 'public-key'],
+            ['awg', 'show', name, 'public-key'],
             stderr=subprocess.DEVNULL,
             timeout=2.0,
         ).decode().strip()
@@ -433,7 +438,7 @@ def _route(cmd, cidr):
 @require_api_key
 def health():
     """
-    Return node health, uptime, version, and WireGuard interface state.
+    Return node health, uptime, version, and AmneziaWG interface state.
 
     The panel uses this information for:
     - node online/offline monitoring
@@ -527,12 +532,10 @@ _NODE_OPS_PACKAGE_CANDIDATES = (
     ('zypper', 'zypper'), ('pacman', 'pacman'), ('apk', 'apk'),
 )
 _NODE_OPS_PACKAGE_NAMES = {
-    'wireguard_tools': {'apt':'wireguard-tools','dnf':'wireguard-tools','yum':'wireguard-tools','zypper':'wireguard-tools','pacman':'wireguard-tools','apk':'wireguard-tools'},
     'nftables': {'apt':'nftables','dnf':'nftables','yum':'nftables','zypper':'nftables','pacman':'nftables','apk':'nftables'},
     'iproute': {'apt':'iproute2','dnf':'iproute','yum':'iproute','zypper':'iproute2','pacman':'iproute2','apk':'iproute2'},
 }
 _NODE_OPS_ACTIONS = {
-    'install_wireguard_tools': 'wireguard_tools',
     'install_nftables': 'nftables',
     'install_iproute': 'iproute',
     'enable_ipv4_forwarding': None,
@@ -579,8 +582,8 @@ def _node_ops_profile():
         'systemd': bool(shutil.which('systemctl')),
         'sysctl': bool(shutil.which('sysctl')),
         'nftables': bool(shutil.which('nft')),
-        'wireguard': bool(shutil.which('wg')),
-        'wg_quick': bool(shutil.which('wg-quick')),
+        'wireguard': bool(shutil.which('awg')),
+        'wg_quick': bool(shutil.which('awg-quick')),
         'iproute': bool(shutil.which('ip')),
         'panel_service': 'wg-node-agent.service',
         'remote_agent': True,
@@ -668,8 +671,8 @@ def _node_ops_diagnostic():
     ))
 
     binary_specs = (
-        ('wg', 'WireGuard control utility', 'install_wireguard_tools'),
-        ('wg-quick', 'WireGuard interface helper', 'install_wireguard_tools'),
+        ('awg', 'AmneziaWG control utility', None),
+        ('awg-quick', 'AmneziaWG interface helper', None),
         ('ip', 'iproute networking utility', 'install_iproute'),
         ('nft', 'nftables utility', 'install_nftables'),
     )
@@ -679,11 +682,12 @@ def _node_ops_diagnostic():
             'binary_' + binary, title,
             'pass' if present else 'warning',
             f"{binary} is {'available' if present else 'not available'} in the node agent PATH.",
-            'Install the missing package with the node package manager, then verify the executable is visible to the agent.',
+            ('Install the missing package with the node package manager.'
+             if action else 'Run sudo bash scripts/install-awg.sh from the Node checkout.'),
             category='packages',
-            repair=None if present else {'action':action,'label':'Install required tooling','risk':'low'},
+            repair=None if present or not action else {'action':action,'label':'Install required tooling','risk':'low'},
             commands=[f'command -v {binary}', f'{binary} --version 2>/dev/null || true'],
-            impact='Missing host networking tools prevent normal WireGuard/firewall diagnostics and management.',
+            impact='Missing host networking tools prevent normal AmneziaWG/firewall diagnostics and management.',
         ))
 
     interfaces = _node_ops_configured_interfaces()
@@ -697,12 +701,12 @@ def _node_ops_diagnostic():
             f"Configuration file: present; runtime: {'up' if up else 'down'}.",
             'A deliberately stopped interface is valid. Otherwise review its Address, ListenPort and hooks before starting it.',
             category='wireguard',
-            repair=None if up else {'action':'start_interface','label':f'Start {name}','risk':'medium','target':name,'note':'Starts the existing WireGuard configuration on this node.'},
-            commands=[f'wg show {name}', f'wg-quick up {name}'],
-            impact='A stopped interface prevents attached peers on this node from passing WireGuard traffic.',
+            repair=None if up else {'action':'start_interface','label':f'Start {name}','risk':'medium','target':name,'note':'Starts the existing AmneziaWG configuration on this node.'},
+            commands=[f'awg show {name}', f'awg-quick up {name}'],
+            impact='A stopped interface prevents attached peers on this node from passing AmneziaWG traffic.',
         ))
     if not interfaces:
-        add(_node_ops_finding('interfaces','Node interfaces','pass','No WireGuard configuration files were found on this node.','Create or synchronize an interface only if this node should host WireGuard.',category='wireguard'))
+        add(_node_ops_finding('interfaces','Node interfaces','pass','No AmneziaWG configuration files were found on this node.','Create or synchronize an interface only if this node should host AmneziaWG.',category='wireguard'))
 
     forwarding_value = None
     try:
@@ -722,7 +726,7 @@ def _node_ops_diagnostic():
         category='routing',
         repair={'action':'enable_ipv4_forwarding','label':'Enable IPv4 forwarding','risk':'medium'} if forwarding_status == 'warning' else None,
         commands=['sysctl net.ipv4.ip_forward'],
-        impact='A WireGuard gateway cannot route IPv4 peer traffic when forwarding is disabled.',
+        impact='A AmneziaWG gateway cannot route IPv4 peer traffic when forwarding is disabled.',
     ))
 
     default_route = False
@@ -752,7 +756,7 @@ def _node_ops_diagnostic():
         'ufw_state','UFW firewall state',
         'review' if ufw_state == 'active' else ('unknown' if ufw_state == 'unknown' else 'pass'),
         f'UFW is {ufw_state}.',
-        'An active firewall is valid. Confirm it allows the intended WireGuard listener and forwarding policy; do not disable it simply to clear this advisory.',
+        'An active firewall is valid. Confirm it allows the intended AmneziaWG listener and forwarding policy; do not disable it simply to clear this advisory.',
         category='firewall', commands=['ufw status verbose 2>/dev/null || true','ss -lntup'],
     ))
 
@@ -763,7 +767,7 @@ def _node_ops_diagnostic():
         add(_node_ops_finding(
             'disk','Available disk space','warning' if disk_warning else 'pass',
             f'{free/1024**3:.2f} GiB free ({free_pct:.1f}%).',
-            'Review disk usage before deleting anything. Preserve WireGuard configuration and node-agent files.',
+            'Review disk usage before deleting anything. Preserve AmneziaWG configuration and node-agent files.',
             category='storage', commands=['df -hT','df -ih'],
             impact='Low disk space can prevent updates, logs, and configuration writes.',
         ))
@@ -779,7 +783,7 @@ def _node_ops_diagnostic():
     add(_node_ops_finding(
         'dns','Resolver configuration','pass' if resolv_ok else 'warning',
         'At least one resolver is configured.' if resolv_ok else 'No nameserver entry could be confirmed.',
-        'Review the host resolver configuration separately from WireGuard client DNS settings.',
+        'Review the host resolver configuration separately from AmneziaWG client DNS settings.',
         category='dns', commands=['cat /etc/resolv.conf','resolvectl status 2>/dev/null || true'],
     ))
 
@@ -803,7 +807,7 @@ def _node_ops_diagnostic():
     add(_node_ops_finding(
         'pending_reboot','Pending reboot','review' if pending_reboot else 'pass',
         'The operating system reports a reboot is required.' if pending_reboot else 'No reboot-required marker is present.',
-        'Schedule a maintenance window only after confirming remote access and WireGuard recovery.',
+        'Schedule a maintenance window only after confirming remote access and AmneziaWG recovery.',
         category='system', commands=['cat /var/run/reboot-required.pkgs 2>/dev/null || true','uname -r'],
     ))
 
@@ -826,7 +830,7 @@ def _node_ops_diagnostic():
             add(_node_ops_finding('env_mode','Node environment file permissions','unknown','Permission mode could not be read; contents were not read.','Inspect the node agent .env permissions without printing its contents.',category='security'))
 
     stages = [
-        {'id':'wireguard','label':'WireGuard','state':'ready' if profile['wireguard'] and any(x['is_up'] for x in interfaces) else 'attention','detail':'At least one interface active' if any(x['is_up'] for x in interfaces) else 'No active interface'},
+        {'id':'wireguard','label':'AmneziaWG','state':'ready' if profile['wireguard'] and any(x['is_up'] for x in interfaces) else 'attention','detail':'At least one interface active' if any(x['is_up'] for x in interfaces) else 'No active interface'},
         {'id':'forwarding','label':'Forwarding','state':'ready' if forwarding_value == 1 else ('attention' if gateway_expected else 'not_required'),'detail':'Enabled' if forwarding_value == 1 else ('Required but disabled' if gateway_expected else 'Not required by detected hooks')},
         {'id':'route','label':'Default route','state':'ready' if default_route else ('attention' if gateway_expected else 'review'),'detail':'Present' if default_route else 'Not detected'},
         {'id':'firewall','label':'Firewall','state':'ready' if profile['nftables'] or ufw_state in {'active','inactive'} else 'review','detail':'Firewall tooling detected' if profile['nftables'] or ufw_state != 'not installed' else 'No firewall tool detected'},
@@ -918,7 +922,7 @@ def _node_ops_require_root():
 def _node_ops_repair(action, target=None):
     _node_ops_require_root()
     profile = _node_ops_profile()
-    if action in {'install_wireguard_tools','install_nftables','install_iproute'}:
+    if action in {'install_nftables', 'install_iproute'}:
         package_key = _NODE_OPS_ACTIONS[action]
         steps = _node_ops_package_steps(package_key, profile)
         if not steps:
@@ -927,7 +931,7 @@ def _node_ops_repair(action, target=None):
             completed = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=180, check=False)
             if completed.returncode != 0:
                 raise RuntimeError('Package installation did not complete successfully.')
-        expected = {'install_wireguard_tools':('wg','wg-quick'),'install_nftables':('nft',),'install_iproute':('ip',)}[action]
+        expected = {'install_nftables':('nft',),'install_iproute':('ip',)}[action]
         if not all(shutil.which(binary) for binary in expected):
             raise RuntimeError('The installed tool could not be verified in the node agent PATH.')
         return {'action':action,'verified':True,'message':'Required node tooling was installed and verified.'}
@@ -975,7 +979,7 @@ def _node_ops_repair(action, target=None):
         was_up = _iface_up(name)
         if was_up:
             return {'action':action,'target':name,'verified':True,'message':f'{name} is already active.'}
-        subprocess.check_call(['wg-quick','up',name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        subprocess.check_call(['awg-quick', 'up', str(conf)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         if not _iface_up(name):
             raise RuntimeError('The interface did not verify as active.')
         return {'action':action,'target':name,'verified':True,'message':f'{name} is active and verified on the node.'}
@@ -996,7 +1000,7 @@ def node_operations_diagnostic():
 @app.post('/api/operations/peer-diagnostic')
 @require_api_key
 def node_operations_peer_diagnostic():
-    """Return read-only runtime evidence for exactly one WireGuard peer.
+    """Return read-only runtime evidence for exactly one AmneziaWG peer.
 
     Inputs are deliberately limited to a validated interface name and public
     key.  The response never includes private or preshared key material.
@@ -1022,12 +1026,12 @@ def node_operations_peer_diagnostic():
 
     try:
         lines = subprocess.check_output(
-            ['wg', 'show', iface, 'dump'],
+            ['awg', 'show', iface, 'dump'],
             stderr=subprocess.DEVNULL,
             timeout=3,
         ).decode('utf-8', 'replace').splitlines()
         if not lines or len(lines[0].split('\t')) < 4 or any(len(line.split('\t')) < 8 for line in lines[1:]):
-            raise ValueError('Incomplete WireGuard runtime response')
+            raise ValueError('Incomplete AmneziaWG runtime response')
         runtime.update(interface_state='up', peer_present=False)
         now = int(time.time())
         window = max(5, int(os.environ.get('WG_ONLINE_HANDSHAKE_WINDOW', '180') or 180))
@@ -1060,7 +1064,7 @@ def node_operations_peer_diagnostic():
     except subprocess.CalledProcessError:
         runtime['reason'] = 'wg_show_failed'
     except Exception:
-        app.logger.exception('Peer-specific WireGuard diagnostic failed for %s', iface)
+        app.logger.exception('Peer-specific AmneziaWG diagnostic failed for %s', iface)
         runtime['reason'] = 'runtime_unavailable'
 
     path_stages = []
@@ -1181,9 +1185,9 @@ def _safe_iface_name(
             'Interface name is required.'
         )
 
-    if len(name) > 32:
+    if len(name) > 15:
         raise ValueError(
-            'Interface name must be 32 '
+            'Interface name must be 15 '
             'characters or fewer.'
         )
 
@@ -1210,14 +1214,15 @@ def _safe_iface_name(
 
 
 def _wg_conf_dir() -> str:
-    return WG_CONF_PATH if os.path.isdir(WG_CONF_PATH) else os.path.dirname(WG_CONF_PATH)
+    path = os.path.abspath(WG_CONF_PATH)
+    return os.path.dirname(path) if os.path.isfile(path) else path
 
 
 def _iface_conf_path(name: str) -> str:
     return os.path.join(_wg_conf_dir(), f'{name}.conf')
 
 
-def _write_conf_atomic(path: str, text: str):
+def _write_conf_atomic(path: str, text: str, *, create_only=False):
 
     import tempfile
 
@@ -1236,8 +1241,11 @@ def _write_conf_atomic(path: str, text: str):
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(tmp_path, mode)
-        os.replace(tmp_path, path)
-        tmp_path = None
+        if create_only:
+            os.link(tmp_path, path)
+        else:
+            os.replace(tmp_path, path)
+            tmp_path = None
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -1311,7 +1319,7 @@ def _upsert_peer_block_text(existing: str, pub: str, block_lines: list[str]) -> 
 def _runtime_has_peer(iface: str, pub: str) -> bool:
     try:
         out = subprocess.check_output(
-            ['wg', 'show', iface, 'allowed-ips'],
+            ['awg', 'show', iface, 'allowed-ips'],
             stderr=subprocess.DEVNULL, timeout=4,
         ).decode('utf-8', 'replace')
     except Exception:
@@ -1483,7 +1491,7 @@ def node_restore_wg():
             ):
                 raise ValueError(
                     f'{filename} does not look like '
-                    'a WireGuard interface config'
+                    'a AmneziaWG interface config'
                 )
 
             destination = os.path.join(
@@ -1534,9 +1542,9 @@ def node_restore_wg():
                 try:
                     subprocess.run(
                         [
-                            'wg-quick',
+                            'awg-quick',
                             'down',
-                            interface_name,
+                            destination,
                         ],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -1548,9 +1556,9 @@ def node_restore_wg():
 
                 up_process = subprocess.run(
                     [
-                        'wg-quick',
+                        'awg-quick',
                         'up',
-                        interface_name,
+                        destination,
                     ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -1566,7 +1574,7 @@ def node_restore_wg():
                             up_process.stderr
                             or up_process.stdout
                             or (
-                                'wg-quick up '
+                                'awg-quick up '
                                 f'{interface_name} failed'
                             )
                         ).strip(),
@@ -1880,7 +1888,7 @@ def _wg_rules(
     if not network:
         raise ValueError(
             "Automatic forwarding requires a private IPv4 "
-            "WireGuard subnet."
+            "AmneziaWG subnet."
         )
 
     egress = _egress_interface()
@@ -1991,7 +1999,7 @@ def _interface_hook_state(
 
     except Exception:
         app.logger.exception(
-            "Could not inspect WireGuard hooks in %s",
+            "Could not inspect AmneziaWG hooks in %s",
             config_path,
         )
 
@@ -2392,6 +2400,7 @@ def _write_interface_conf(
         f'Address = {(address or "").strip()}',
         f'ListenPort = {int(listen_port)}',
         f'PrivateKey = {private_key.strip()}',
+        *new_interface_lines(),
     ]
 
     if str(mtu or '').strip():
@@ -2424,34 +2433,8 @@ def _write_interface_conf(
 
     lines.append('')
 
-    temporary_path = (
-        path
-        + '.tmp'
-    )
+    _write_conf_atomic(path, '\n'.join(lines), create_only=True)
 
-    with open(
-        temporary_path,
-        'w',
-        encoding='utf-8',
-    ) as f:
-        f.write(
-            '\n'.join(lines)
-        )
-
-        f.flush()
-        os.fsync(
-            f.fileno()
-        )
-
-    os.chmod(
-        temporary_path,
-        0o600,
-    )
-
-    os.replace(
-        temporary_path,
-        path,
-    )
 
 def _first_cidr(s: str | None) -> str | None:
     """
@@ -2539,7 +2522,7 @@ def create_interface():
             )
 
         private_key = subprocess.check_output(
-            ['wg', 'genkey'],
+            ['awg', 'genkey'],
             stderr=subprocess.DEVNULL,
             timeout=3,
         ).decode().strip()
@@ -2561,9 +2544,9 @@ def create_interface():
         if auto_up:
             proc = subprocess.run(
                 [
-                    'wg-quick',
+                    'awg-quick',
                     'up',
-                    name,
+                    path,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -2578,7 +2561,7 @@ def create_interface():
                     or proc.stdout
                     or ''
                 ).strip() or (
-                    f'wg-quick up {name} failed'
+                    f'awg-quick up {name} failed'
                 )
 
             else:
@@ -2588,7 +2571,7 @@ def create_interface():
                         [
                             'systemctl',
                             'enable',
-                            f'wg-quick@{name}.service',
+                            f'awg-quick@{name}.service',
                         ],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -2598,7 +2581,7 @@ def create_interface():
 
                 except Exception:
                     app.logger.warning(
-                        'Could not enable wg-quick@%s at boot',
+                        'Could not enable awg-quick@%s at boot',
                         name,
                         exc_info=True,
                     )
@@ -2646,6 +2629,9 @@ def create_interface():
             interface=meta,
             up_error=up_error,
         ), 201
+
+    except FileExistsError:
+        return jsonify(error='config_exists'), 409
 
     except ValueError as e:
         return jsonify(
@@ -2759,7 +2745,7 @@ def _wg_runtime_endpoint_host(
     endpoint: str,
 ) -> str:
     """
-    Extract the IP address from a WireGuard runtime endpoint.
+    Extract the IP address from a AmneziaWG runtime endpoint.
 
     Examples:
         1.2.3.4:51820
@@ -2890,14 +2876,15 @@ def _wg_transport_path(
 @app.route('/api/peers')
 @require_api_key
 def peers():
-    """Return WireGuard peer runtime state for the node API.
+    """Return AmneziaWG peer runtime state for the node API.
 
-    ``endpoint`` is the remote endpoint currently observed by WireGuard
+    ``endpoint`` is the remote endpoint currently observed by AmneziaWG
     (for example ``203.0.113.10:51820`` or ``[2001:db8::10]:51820``).
     It is not necessarily the subscriber's original/public ISP address;
     NAT, CGNAT, VPNs and other relays can change what the server observes.
     """
     want_iface = (request.args.get('iface') or '').strip()
+    counters_only = request.args.get('counters_only') == '1'
     peers = []
     now = int(time.time())
 
@@ -2918,7 +2905,7 @@ def peers():
 
     try:
         dump = subprocess.check_output(
-            ['wg', 'show', 'all', 'dump'],
+            ['awg', 'show', 'all', 'dump'],
             stderr=subprocess.DEVNULL,
             timeout=5,
         ).decode('utf-8', 'replace').splitlines()
@@ -2965,7 +2952,7 @@ def peers():
 
             probed = False
 
-            if probe_first:
+            if probe_first and not counters_only:
                 probed = True
                 ping_ok = _node_ping_peer(iface, allowed_ips)
 
@@ -2990,6 +2977,8 @@ def peers():
                 'endpoint': endpoint,
                 'endpoint_host': endpoint_host,
 
+                'rx_bytes': rx_bytes,
+                'tx_bytes': tx_bytes,
                 'rx_mib': round(rx_bytes / 1048576.0, 2),
                 'tx_mib': round(tx_bytes / 1048576.0, 2),
                 'latest_handshake': hs,
@@ -3002,13 +2991,13 @@ def peers():
             })
 
     except subprocess.TimeoutExpired:
-        app.logger.warning('Timed out while reading WireGuard peer state')
+        app.logger.warning('Timed out while reading AmneziaWG peer state')
     except subprocess.CalledProcessError as exc:
-        app.logger.warning('wg show all dump failed with rc=%s', exc.returncode)
+        app.logger.warning('awg show all dump failed with rc=%s', exc.returncode)
     except FileNotFoundError:
-        app.logger.warning('WireGuard command "wg" was not found')
+        app.logger.warning('AmneziaWG command "awg" was not found')
     except Exception:
-        app.logger.exception('Could not collect WireGuard peer state')
+        app.logger.exception('Could not collect AmneziaWG peer state')
 
     return jsonify(peers=peers)
 
@@ -3049,7 +3038,8 @@ def _node_version() -> str:
     return "0.0.0"
 
 
-NODE_REPO = "Azumi67/WG_Panel"
+NODE_REPO = "iransearch/WG_Panel"
+NODE_REPO_REF = "feature/amneziawg"
 
 def _node_root():
     configured = (os.getenv("WG_PANEL_ROOT") or "").strip()
@@ -3288,7 +3278,7 @@ def _node_latest_version():
         response = requests.get(
             (
                 f"https://api.github.com/repos/"
-                f"{NODE_REPO}/commits/main"
+                f"{NODE_REPO}/commits/{NODE_REPO_REF}"
             ),
             headers=headers,
             timeout=8,
@@ -4182,7 +4172,7 @@ def add_peer():
             wanted_keepalive=0,
         ):
             command = [
-                'wg',
+                'awg',
                 'set',
                 iface,
                 'peer',
@@ -4223,7 +4213,7 @@ def add_peer():
         def _runtime_remove():
             return subprocess.run(
                 [
-                    'wg',
+                    'awg',
                     'set',
                     iface,
                     'peer',
@@ -4499,7 +4489,7 @@ def add_peer():
             try:
                 subprocess.check_call(
                     [
-                        'wg',
+                        'awg',
                         'show',
                         iface,
                     ],
@@ -4514,9 +4504,9 @@ def add_peer():
             except Exception:
                 up_result = subprocess.run(
                     [
-                        'wg-quick',
+                        'awg-quick',
                         'up',
-                        iface,
+                        conf,
                     ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -4712,7 +4702,7 @@ def add_peer():
                     raise RuntimeError(
                         'Peer update was not '
                         'written to the '
-                        'WireGuard config.'
+                        'AmneziaWG config.'
                     )
 
                 if not _runtime_has_peer(
@@ -4722,7 +4712,7 @@ def add_peer():
                     raise RuntimeError(
                         'Peer update was not '
                         'present in the '
-                        'WireGuard runtime.'
+                        'AmneziaWG runtime.'
                     )
 
             except Exception:
@@ -4736,7 +4726,7 @@ def add_peer():
                 except Exception:
                     app.logger.exception(
                         'Could not restore '
-                        'WireGuard config after '
+                        'AmneziaWG config after '
                         'peer update failure'
                     )
 
@@ -4748,7 +4738,7 @@ def add_peer():
                 except Exception:
                     app.logger.exception(
                         'Could not restore '
-                        'WireGuard runtime after '
+                        'AmneziaWG runtime after '
                         'peer update failure'
                     )
 
@@ -4771,7 +4761,7 @@ def add_peer():
 
     except subprocess.TimeoutExpired as exc:
         app.logger.exception(
-            'WireGuard peer operation timed out'
+            'AmneziaWG peer operation timed out'
         )
 
         return jsonify(
@@ -4817,19 +4807,19 @@ def _peerlive_transfer_bytes(pub: str) -> dict:
 
     try:
         dump = subprocess.check_output(
-            ['wg', 'show', 'all', 'dump'],
+            ['awg', 'show', 'all', 'dump'],
             stderr=subprocess.PIPE,
             timeout=6,
         ).decode('utf-8', 'replace').splitlines()
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError('wg show timed out') from exc
+        raise RuntimeError('awg show timed out') from exc
     except subprocess.CalledProcessError as exc:
         detail = (
             exc.stderr.decode('utf-8', 'replace')
             if isinstance(exc.stderr, bytes)
             else str(exc.stderr or '')
         ).strip()
-        raise RuntimeError(detail or 'wg show failed') from exc
+        raise RuntimeError(detail or 'awg show failed') from exc
 
     for line in dump:
         parts = line.split('\t')
@@ -4960,7 +4950,7 @@ def enable_peer(pub):
     try:
         subprocess.check_call(
             [
-                'wg',
+                'awg',
                 'show',
                 interface_name,
             ],
@@ -4973,9 +4963,9 @@ def enable_peer(pub):
         try:
             up_result = subprocess.run(
                 [
-                    'wg-quick',
+                    'awg-quick',
                     'up',
-                    interface_name,
+                    _iface_conf_path(interface_name),
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -5001,14 +4991,14 @@ def enable_peer(pub):
                     or up_result.stdout
                     or (
                         'Could not bring '
-                        'WireGuard interface up.'
+                        'AmneziaWG interface up.'
                     )
                 ).strip(),
                 interface=interface_name,
             ), 500
 
     command = [
-        'wg',
+        'awg',
         'set',
         interface_name,
         'peer',
@@ -5106,7 +5096,7 @@ def enable_peer(pub):
                 result.stderr
                 or result.stdout
                 or (
-                    'WireGuard peer '
+                    'AmneziaWG peer '
                     'enable failed.'
                 )
             ).strip(),
@@ -5173,7 +5163,7 @@ def disable_peer(pub):
 
     result = subprocess.run(
         [
-            'wg',
+            'awg',
             'set',
             interface_name,
             'peer',
@@ -5194,7 +5184,7 @@ def disable_peer(pub):
             detail=(
                 result.stderr
                 or result.stdout
-                or 'WireGuard peer removal failed.'
+                or 'AmneziaWG peer removal failed.'
             ).strip(),
             interface=interface_name,
         ), 500
@@ -5231,24 +5221,24 @@ def delete_peer(pub):
 
     try:
         dump = subprocess.check_output(
-            ['wg', 'show', 'all', 'dump'], timeout=8
+            ['awg', 'show', 'all', 'dump'], timeout=8
         ).decode('utf-8', 'replace').splitlines()
         for line in dump:
             parts = line.split('\t')
-            if len(parts) >= 9 and parts[1] == pub:
+            if len(parts) == 9 and parts[1] == pub:
                 runtime_ifaces.append(parts[0])
     except Exception as e:
-        errors.append(f'could not read the WireGuard runtime: {e}')
+        errors.append(f'could not read the AmneziaWG runtime: {e}')
 
     for iface in runtime_ifaces:
         result = subprocess.run(
-            ['wg', 'set', iface, 'peer', pub, 'remove'],
+            ['awg', 'set', iface, 'peer', pub, 'remove'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12,
             check=False,
         )
         if result.returncode != 0:
             errors.append(
-                f'{iface}: {(result.stderr or result.stdout or "wg set failed").strip()}'
+                f'{iface}: {(result.stderr or result.stdout or "awg set failed").strip()}'
             )
         elif _runtime_has_peer(iface, pub):
             errors.append(f'{iface}: the peer is still present after removal')
@@ -5349,13 +5339,21 @@ def iface_availableIPS(name):
 @app.route('/api/iface/<name>/up', methods=['POST'])
 @require_api_key
 def iface_up(name):
-    subprocess.check_call(['wg-quick','up', name])
+    try:
+        name = _safe_iface_name(name)
+    except ValueError:
+        return jsonify(error='invalid_iface'), 400
+    subprocess.check_call(['awg-quick', 'up', _iface_conf_path(name)], timeout=30)
     return jsonify(ok=True)
 
 @app.route('/api/iface/<name>/down', methods=['POST'])
 @require_api_key
 def iface_down(name):
-    subprocess.check_call(['wg-quick','down', name])
+    try:
+        name = _safe_iface_name(name)
+    except ValueError:
+        return jsonify(error='invalid_iface'), 400
+    subprocess.check_call(['awg-quick', 'down', _iface_conf_path(name)], timeout=30)
     return jsonify(ok=True)
 
 @app.route('/api/iface/<name>', methods=['DELETE'])
@@ -5407,7 +5405,7 @@ def iface_delete(name):
 
     try:
         subprocess.run(
-            ['wg-quick', 'down', name],
+            ['awg-quick', 'down', conf_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -5434,6 +5432,29 @@ def iface_delete(name):
         deleted_interface=name,
         deleted_peers=peer_count if force else 0
     )
+
+@app.get('/api/iface/<name>/awg-parameters')
+@require_api_key
+def iface_awg_parameters(name):
+    try:
+        name = _safe_iface_name(name)
+    except ValueError:
+        return jsonify(error='invalid_iface'), 400
+
+    try:
+        parameters = read_parameters(_iface_conf_path(name))
+    except FileNotFoundError:
+        return jsonify(error='not_found'), 404
+    except (OSError, UnicodeError):
+        return jsonify(error='awg_parameters_unavailable'), 502
+
+    if not parameters:
+        return jsonify(error='awg_parameters_unavailable'), 404
+
+    response = jsonify(parameters=parameters)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
 
 @app.get('/api/iface/<name>/pubkey')
 @require_api_key
@@ -5501,7 +5522,7 @@ def agent_iface_logs(name):
     else:
         since_flag = '--since "2 days ago"'
 
-    unit = f'wg-quick@{name}.service'
+    unit = f'awg-quick@{name}.service'
     text = _run(f'journalctl -u {unit} -n 300 --no-pager {since_flag}')
     if not text.strip():
         text = _run(f'journalctl -k -n 300 --no-pager {since_flag}')
@@ -5547,7 +5568,7 @@ def _traffic_nft_capability():
 def _traffic_clean_iface(value):
     value = str(value or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", value):
-        raise ValueError("Invalid WireGuard interface name.")
+        raise ValueError("Invalid AmneziaWG interface name.")
     return value
 
 
@@ -6125,8 +6146,8 @@ def _traffic_test_policy_local(policy):
         return {"ok": False, "policy_id": pid, "policy_name": name, "checks": checks, "counters": {"packets": 0, "bytes": 0}}
     add("table", "Live policy table", "pass", "inet wgpanel_traffic is loaded in the kernel.")
 
-    iface_proc = subprocess.run(["wg", "show", iface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
-    add("interface", "WireGuard interface", "pass" if iface_proc.returncode == 0 else "fail", f"{iface} is active." if iface_proc.returncode == 0 else f"{iface} is not active in the WireGuard runtime.")
+    iface_proc = subprocess.run(["awg", "show", iface], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+    add("interface", "AmneziaWG interface", "pass" if iface_proc.returncode == 0 else "fail", f"{iface} is active." if iface_proc.returncode == 0 else f"{iface} is not active in the AmneziaWG runtime.")
 
     versions = {4, 6}
     if source_mode == "peer":
@@ -6163,7 +6184,7 @@ def _traffic_test_policy_local(policy):
     for version in (4, 6):
         if version not in versions:
             if direct_needed:
-                add(f"direct_v{version}", f"IPv{version} direct rule", "info", f"Skipped because this peer has no IPv{version} WireGuard source address.")
+                add(f"direct_v{version}", f"IPv{version} direct rule", "info", f"Skipped because this peer has no IPv{version} AmneziaWG source address.")
             continue
         if not direct_needed:
             continue
@@ -6509,7 +6530,7 @@ def _traffic_manual_test_local(policy, target):
             'matches': matches,
             'note': (
                 '' if applicable
-                else f'This peer has no IPv{version} WireGuard source address.'
+                else f'This peer has no IPv{version} AmneziaWG source address.'
             ),
         })
 
@@ -6543,7 +6564,7 @@ def _traffic_manual_test_local(policy, target):
         'results': results,
         'note': (
             'This evaluates the live nftables sets and exact scoped DROP rules. '
-            'It does not generate traffic as the WireGuard peer.'
+            'It does not generate traffic as the AmneziaWG peer.'
         ),
     }
 

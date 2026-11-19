@@ -24,7 +24,6 @@ from .platform import command_guide, detect_platform, package_install_argv
 
 _INTERFACE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 _PACKAGE_ACTIONS = {
-    "install_wireguard_tools": ("wireguard_tools", ("wg", "wg-quick")),
     "install_nftables": ("nftables", ("nft",)),
     "install_iproute": ("iproute", ("ip",)),
 }
@@ -366,7 +365,7 @@ def register_operations(app, context):
         if not path.is_file() or path.is_symlink():
             raise RuntimeError("Interface configuration is missing or is not a regular file.")
         bring_up(iface)
-        wg = shutil.which("wg")
+        wg = shutil.which("awg")
         if not wg:
             raise RuntimeError("wg is unavailable after the bring-up attempt.")
         completed = subprocess.run([wg, "show", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4, check=False)
@@ -377,7 +376,7 @@ def register_operations(app, context):
             "target": target,
             "interface": name,
             "verified": True,
-            "message": f"{name} is active and verified by wg show.",
+            "message": f"{name} is active and verified by awg show.",
         }
 
     @bp.after_request

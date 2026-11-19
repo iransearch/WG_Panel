@@ -92,7 +92,7 @@ def _local_runtime(context, device, public_key):
     except Exception:
         pass
     try:
-        rc, output = run(["wg", "show", device, "dump"], timeout=3.0)
+        rc, output = run(["awg", "show", device, "dump"], timeout=3.0)
         if rc != 0:
             return result
         lines = output.strip().splitlines()
@@ -145,12 +145,12 @@ def diagnose_peer(context: dict[str, Any], peer, *, remote_runtime: dict | None 
             stages.append(_stage("access", "Access policy", "ready", "Peer access is enabled." if sub is None else "Subscription and peer access are enabled.", href="/users"))
 
     if not iface or not dev_name:
-        stages.append(_stage("interface", "WireGuard interface", "attention", "The peer is not attached to a valid interface.", href="/users"))
+        stages.append(_stage("interface", "AmneziaWG interface", "attention", "The peer is not attached to a valid interface.", href="/users"))
     else:
         iface_state = str(runtime.get("interface_state") or "unknown")
         state = "ready" if iface_state == "up" else ("attention" if iface_state == "down" else "review")
         detail = f"{dev_name} is active." if iface_state == "up" else (f"{dev_name} is not active." if iface_state == "down" else f"Runtime state for {dev_name} could not be confirmed.")
-        stages.append(_stage("interface", "WireGuard interface", state, detail,
+        stages.append(_stage("interface", "AmneziaWG interface", state, detail,
             hint="Check this interface in Peers. If it is unexpectedly stopped, review a read-only host diagnostic before applying any repair.", href=operations_href))
 
     present = runtime.get("peer_present")
@@ -163,7 +163,7 @@ def diagnose_peer(context: dict[str, Any], peer, *, remote_runtime: dict | None 
     elif present is None:
         stages.append(_stage("runtime", "Peer runtime", "unknown",
             "The runtime probe did not return enough evidence to confirm this peer.",
-            hint="Check WireGuard command permissions or node connectivity, then run Diagnose again. No restart is implied by a failed probe.", href=operations_href))
+            hint="Check AmneziaWG command permissions or node connectivity, then run Diagnose again. No restart is implied by a failed probe.", href=operations_href))
     elif not present:
         stages.append(_stage("runtime", "Peer runtime", "attention",
             "The peer public key is absent from the selected interface runtime.",
@@ -177,7 +177,7 @@ def diagnose_peer(context: dict[str, Any], peer, *, remote_runtime: dict | None 
             except Exception:
                 connection = {}
         online = connection.get("online") is True or connection.get("connection_status") == "online"
-        detail = "Peer has current WireGuard activity." if online else "Peer is installed. No recent activity was confirmed."
+        detail = "Peer has current AmneziaWG activity." if online else "Peer is installed. No recent activity was confirmed."
         age = connection.get("latest_handshake_age")
         if age is not None:
             detail += f" Latest handshake {int(age)}s ago."

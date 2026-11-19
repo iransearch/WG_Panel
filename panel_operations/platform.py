@@ -17,14 +17,6 @@ _PACKAGE_CANDIDATES = (
 )
 
 _PACKAGE_NAMES = {
-    "wireguard_tools": {
-        "apt": "wireguard-tools",
-        "dnf": "wireguard-tools",
-        "yum": "wireguard-tools",
-        "zypper": "wireguard-tools",
-        "pacman": "wireguard-tools",
-        "apk": "wireguard-tools",
-    },
     "nftables": {
         "apt": "nftables",
         "dnf": "nftables",
@@ -88,8 +80,8 @@ def detect_platform() -> dict:
         "systemd": bool(systemctl),
         "sysctl": bool(sysctl),
         "nftables": bool(shutil.which("nft")),
-        "wireguard": bool(shutil.which("wg")),
-        "wg_quick": bool(shutil.which("wg-quick")),
+        "wireguard": bool(shutil.which("awg")),
+        "wg_quick": bool(shutil.which("awg-quick")),
         "iproute": bool(shutil.which("ip")),
         "panel_service": (os.getenv("PANEL_SERVICE_NAME") or "wg-panel.service").strip() or "wg-panel.service",
     }
@@ -138,9 +130,10 @@ def package_install_commands(package_key: str, profile: dict | None = None) -> l
 def command_guide(profile: dict | None = None) -> list[dict]:
     profile = profile or detect_platform()
     service = profile.get("panel_service") or "wg-panel.service"
-    package_commands: list[dict] = []
+    package_commands = [
+        {"label": "Install AmneziaWG tools", "commands": ["sudo bash scripts/install-awg.sh"]},
+    ]
     for key, label in (
-        ("wireguard_tools", "WireGuard tools"),
         ("nftables", "nftables"),
         ("iproute", "iproute tools"),
     ):
@@ -181,19 +174,19 @@ def command_guide(profile: dict | None = None) -> list[dict]:
         },
         {
             "id": "wireguard",
-            "title": "WireGuard",
+            "title": "AmneziaWG",
             "description": "Inspect interfaces, handshakes, addresses, and configuration permissions. Replace <iface> only after confirming the intended interface name.",
             "items": [
-                {"label": "Interfaces and handshakes", "commands": ["wg show interfaces", "wg show"]},
+                {"label": "Interfaces and handshakes", "commands": ["awg show interfaces", "awg show"]},
                 {"label": "Network links and addresses", "commands": ["ip -brief link", "ip -brief address"]},
-                {"label": "One interface", "commands": ["wg show <iface>", "systemctl status wg-quick@<iface>.service --no-pager -l"]},
-                {"label": "Validate file permissions", "commands": ["find /etc/wireguard -maxdepth 1 -type f -name '*.conf' -printf '%m %u:%g %p\\n'"]},
+                {"label": "One interface", "commands": ["awg show <iface>", "systemctl status awg-quick@<iface>.service --no-pager -l"]},
+                {"label": "Validate file permissions", "commands": ["find /etc/amnezia/amneziawg -maxdepth 1 -type f -name '*.conf' -printf '%m %u:%g %p\\n'"]},
             ],
         },
         {
             "id": "routing",
             "title": "Routing & forwarding",
-            "description": "A WireGuard gateway normally needs forwarding and a valid route/NAT path. Do not enable forwarding on a host that is intentionally not a router.",
+            "description": "A AmneziaWG gateway normally needs forwarding and a valid route/NAT path. Do not enable forwarding on a host that is intentionally not a router.",
             "items": [
                 {"label": "Routes", "commands": ["ip route", "ip -6 route", "ip route get 1.1.1.1"]},
                 {"label": "Check forwarding", "commands": ["sysctl net.ipv4.ip_forward", "sysctl net.ipv6.conf.all.forwarding"]},
@@ -204,7 +197,7 @@ def command_guide(profile: dict | None = None) -> list[dict]:
         {
             "id": "firewall",
             "title": "Firewall / nftables",
-            "description": "Inspect only. Never use a blanket flush while connected remotely; preserve SSH, panel, WireGuard, tunnel, and established-connection rules.",
+            "description": "Inspect only. Never use a blanket flush while connected remotely; preserve SSH, panel, AmneziaWG, tunnel, and established-connection rules.",
             "items": [
                 {"label": "nftables", "commands": ["nft --version", "nft list ruleset"]},
                 {"label": "UFW if installed", "commands": ["ufw status verbose", "ufw status numbered"]},
@@ -215,7 +208,7 @@ def command_guide(profile: dict | None = None) -> list[dict]:
         {
             "id": "ports",
             "title": "Listeners & connectivity",
-            "description": "Confirm which processes own listening sockets and whether the expected WireGuard UDP listener exists.",
+            "description": "Confirm which processes own listening sockets and whether the expected AmneziaWG UDP listener exists.",
             "items": [
                 {"label": "Listening sockets", "commands": ["ss -lntup", "ss -lnup"]},
                 {"label": "Established TCP sessions", "commands": ["ss -tnp state established"]},
@@ -225,7 +218,7 @@ def command_guide(profile: dict | None = None) -> list[dict]:
         {
             "id": "dns",
             "title": "DNS",
-            "description": "Check resolver state separately from WireGuard client DNS settings.",
+            "description": "Check resolver state separately from AmneziaWG client DNS settings.",
             "items": [
                 {"label": "Resolver configuration", "commands": ["cat /etc/resolv.conf", "resolvectl status 2>/dev/null || true"]},
                 {"label": "Resolve a test name", "commands": ["getent ahosts example.com"]},
@@ -237,7 +230,7 @@ def command_guide(profile: dict | None = None) -> list[dict]:
             "description": "Inspect permissions and exposure without printing secret values. Do not cat .env, private keys, or token files into support chats.",
             "items": [
                 {"label": "Environment permissions", "commands": ["stat -c '%a %U:%G %n' .env 2>/dev/null || true"]},
-                {"label": "WireGuard directory permissions", "commands": ["stat -c '%a %U:%G %n' /etc/wireguard 2>/dev/null || true", "find /etc/wireguard -maxdepth 1 -type f -printf '%m %u:%g %p\\n' 2>/dev/null"]},
+                {"label": "AmneziaWG directory permissions", "commands": ["stat -c '%a %U:%G %n' /etc/amnezia/amneziawg 2>/dev/null || true", "find /etc/amnezia/amneziawg -maxdepth 1 -type f -printf '%m %u:%g %p\\n' 2>/dev/null"]},
                 {"label": "Failed SSH logins", "commands": ["journalctl -u ssh -u sshd --since '2 hours ago' --no-pager | tail -120"]},
             ],
         },

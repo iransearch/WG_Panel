@@ -254,7 +254,6 @@
     }
     const priority = {
       install_iproute: 10,
-      install_wireguard_tools: 20,
       install_nftables: 30,
       restrict_env: 80,
       enable_ipv4_forwarding: 90,
@@ -465,12 +464,6 @@
         verify: ['Read the new permission mode', 'Confirm the file is no longer group/world-readable'],
         safety: 'WG Panel changes permission bits only. Secret values are never read or returned to the browser.'
       },
-      install_wireguard_tools: {
-        pre: ['Detect the package manager', 'Confirm WireGuard tools are missing'],
-        run: ['Install the correct WireGuard tools package', 'Leave WireGuard configuration unchanged'],
-        verify: ['Confirm wg and wg-quick are available', 'Read the installed tool version'],
-        safety: 'This installs tools only. It does not replace keys or interface configuration.'
-      },
       install_nftables: {
         pre: ['Detect the package manager', 'Confirm nft is missing'],
         run: ['Install the nftables package', 'Leave the current ruleset unchanged'],
@@ -492,7 +485,7 @@
       start_interface: {
         pre: ['Confirm the interface exists in WG Panel', 'Validate the interface name and config file'],
         run: ['Use WG Panel’s existing interface start routine', 'Apply the stored interface configuration'],
-        verify: ['Run wg show for the interface', 'Confirm the interface is active'],
+        verify: ['Run awg show for the interface', 'Confirm the interface is active'],
         safety: 'Review PostUp/PostDown hooks before approving. Keys and configuration files are not regenerated.'
       }
     };
@@ -607,7 +600,7 @@
     const iconFor = id => ({ wireguard: 'fa-network-wired', forwarding: 'fa-share-nodes', route: 'fa-route', firewall: 'fa-shield-halved', dns: 'fa-globe' })[id] || 'fa-circle';
     const labelFor = state => ({ ready: 'Ready', not_required: 'Not required', attention: 'Needs attention', review: 'Review' })[state] || 'Unknown';
     return `<section class="ops2-path-card">
-      <div class="ops2-path-head"><span><i class="fas fa-route"></i></span><div><strong>Network path</strong><small>Read-only readiness from WireGuard to the host network.</small></div></div>
+      <div class="ops2-path-head"><span><i class="fas fa-route"></i></span><div><strong>Network path</strong><small>Read-only readiness from AmneziaWG to the host network.</small></div></div>
       <div class="ops2-path-stages">${stages.map((stage, index) => `<div class="ops2-path-stage ${esc(stage.state || 'review')}">
         <span class="ops2-path-stage-icon"><i class="fas ${iconFor(stage.id)}"></i></span>
         <span class="ops2-path-stage-copy"><strong>${esc(stage.label || `Stage ${index + 1}`)}</strong><small>${esc(stage.detail || labelFor(stage.state))}</small></span>

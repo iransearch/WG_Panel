@@ -1,3 +1,31 @@
+# WG Panel for AmneziaWG
+
+<div dir="rtl">
+
+این نسخه پنل و Node Agent را برای **AmneziaWG** اجرا می‌کند. ساخت Interface از پنل یا نصب‌کننده یک پروفایل AWG 3.1 ایجاد می‌کند. تنظیمات پروتکل از فایل همان Interface در خروجی Peer، QR و ساب‌اسکریپشن استفاده می‌شوند. اتصال از طریق یک کلاینت سازگار با AWG 3.1 انجام می‌شود.
+
+</div>
+
+### نصب روی Debian / Ubuntu
+
+```bash
+git clone --branch feature/amneziawg https://github.com/iransearch/WG_Panel.git
+cd WG_Panel
+sudo bash wg.sh --wg-py "$PWD/wg.py"
+```
+
+<div dir="rtl">
+
+در منو **Install Everything** را انتخاب کنید. برای سرور Node از نصب‌کنندهٔ Node پایین همین صفحه استفاده کنید. نصب‌کننده‌ها ابزارهای `awg`، `awg-quick` و `amneziawg-go` را از نسخه‌های ثابت Amnezia می‌سازند.
+
+فایل‌های Interface به‌طور پیش‌فرض در `/etc/amnezia/amneziawg` قرار می‌گیرند. اگر Interface معتبر AWG از قبل دارید، همان فایل را در این مسیر قرار دهید تا پنل آن را پیدا کند. این مسیر را با `AMNEZIAWG_CONF_PATH` می‌توان تغییر داد. فعال‌سازی خودکار از طریق سرویس `awg-quick@.service` از مسیر پیش‌فرض استفاده می‌کند.
+
+در حالت Docker مسیر `/dev/net/tun` باید روی میزبان در دسترس باشد. دستورهای نصب پنل و Node با Compose در [DOCKER.txt](DOCKER.txt) آمده‌اند. در نصب بومی، `awg-quick` از ماژول سازگار AmneziaWG هسته یا `amneziawg-go` استفاده می‌کند.
+
+</div>
+
+---
+
 ![R (2)](https://github.com/Azumi67/PrivateIP-Tunnel/assets/119934376/a064577c-9302-4f43-b3bf-3d4f84245a6f)
 نام پروژه : پنل وایرگارد
 
@@ -9,13 +37,13 @@
 <div dir="rtl" align="right">
 
 
-<p dir="rtl" align="right">▪&nbsp; <b><bdi dir="ltr">Dashboard</bdi> کامل</b> برای نمایش وضعیت سرور و پنل، مصرف <bdi dir="ltr">CPU</bdi>، <bdi dir="ltr">RAM</bdi>، <bdi dir="ltr">Disk</bdi>، <bdi dir="ltr">Network</bdi> و اطلاعات <bdi dir="ltr">WireGuard</bdi></p>
+<p dir="rtl" align="right">▪&nbsp; <b><bdi dir="ltr">Dashboard</bdi> کامل</b> برای نمایش وضعیت سرور و پنل، مصرف <bdi dir="ltr">CPU</bdi>، <bdi dir="ltr">RAM</bdi>، <bdi dir="ltr">Disk</bdi>، <bdi dir="ltr">Network</bdi> و اطلاعات <bdi dir="ltr">AmneziaWG</bdi></p>
 
 <p dir="rtl" align="right">▪&nbsp; <b>مدیریت کامل Peerها</b> در سرور اصلی و Nodeها شامل <bdi dir="ltr">Create</bdi>، <bdi dir="ltr">Bulk create</bdi>، <bdi dir="ltr">Edit</bdi>، <bdi dir="ltr">Enable</bdi>، <bdi dir="ltr">Disable</bdi>، <bdi dir="ltr">Reset usage</bdi>، <bdi dir="ltr">Reset timer</bdi>، <bdi dir="ltr">QR Code</bdi>، <bdi dir="ltr">Config</bdi>، <bdi dir="ltr">Short Link</bdi>، <bdi dir="ltr">Logs</bdi> و نمایش اطلاعات کامل <bdi dir="ltr">Peer</bdi></p>
 
 <p dir="rtl" align="right">▪&nbsp; <b>مدیریت Interfaceها</b> در سرور اصلی و Nodeها شامل ساخت <bdi dir="ltr">Interface</bdi> جدید، فعال/غیرفعال کردن، حذف، تنظیم <bdi dir="ltr">DNS</bdi>، <bdi dir="ltr">MTU</bdi>، <bdi dir="ltr">Listen <bdi dir="ltr">Port</bdi></bdi> و <bdi dir="ltr">Start after creation</bdi></p>
 
-<p dir="rtl" align="right">▪&nbsp; هنگام ساخت <bdi dir="ltr">Interface</bdi> جدید، تنظیمات مورد نیاز <bdi dir="ltr">WireGuard</bdi> و Ruleهای مربوط به <bdi dir="ltr">Forward</bdi> و <bdi dir="ltr">NAT</bdi> به صورت خودکار ساخته میشود</p>
+<p dir="rtl" align="right">▪&nbsp; هنگام ساخت <bdi dir="ltr">Interface</bdi> جدید، تنظیمات مورد نیاز <bdi dir="ltr">AmneziaWG</bdi> و Ruleهای مربوط به <bdi dir="ltr">Forward</bdi> و <bdi dir="ltr">NAT</bdi> به صورت خودکار ساخته میشود</p>
 
 <p dir="rtl" align="right">▪&nbsp; <b><bdi dir="ltr">Subscription</bdi> چند <bdi dir="ltr">Location</bdi></b> برای ساخت یک <bdi dir="ltr">Client</bdi> با چند <bdi dir="ltr">Config</bdi> از Interfaceهای <bdi dir="ltr">Local</bdi>، <bdi dir="ltr">Node</bdi> یا ترکیبی از هر دو</p>
 
@@ -27,7 +55,7 @@
 
 <p dir="rtl" align="right">▪&nbsp; امکان اضافه کردن شماره تلفن و <bdi dir="ltr">Telegram</bdi> ID برای Peerهای <bdi dir="ltr">Local</bdi> و <bdi dir="ltr">Node</bdi></p>
 
-<p dir="rtl" align="right">▪&nbsp; <b><bdi dir="ltr">Advanced <bdi dir="ltr">WireGuard</bdi> options</bdi></b> شامل <bdi dir="ltr">DNS</bdi>، <bdi dir="ltr">MTU</bdi>، Keepalive، <bdi dir="ltr">Allowed IPs</bdi>، <bdi dir="ltr">Server Endpoint</bdi> و <bdi dir="ltr">Fixed <bdi dir="ltr">Client</bdi> Endpoint</bdi></p>
+<p dir="rtl" align="right">▪&nbsp; <b><bdi dir="ltr">Advanced <bdi dir="ltr">AmneziaWG</bdi> options</bdi></b> شامل <bdi dir="ltr">DNS</bdi>، <bdi dir="ltr">MTU</bdi>، Keepalive، <bdi dir="ltr">Allowed IPs</bdi>، <bdi dir="ltr">Server Endpoint</bdi> و <bdi dir="ltr">Fixed <bdi dir="ltr">Client</bdi> Endpoint</bdi></p>
 
 <p dir="rtl" align="right">▪&nbsp; <bdi dir="ltr">Allowed IPs</bdi> به صورت قابل مدیریت است و میتوان Networkها را اضافه یا حذف کرد؛ همچنین Networkهای <bdi dir="ltr">Local</bdi> و <bdi dir="ltr">Node</bdi> میتوانند به صورت خودکار شناسایی و اضافه شوند</p>
 
@@ -45,7 +73,7 @@
 
 <p dir="rtl" align="right">▪&nbsp; امکان تغییر <bdi dir="ltr">Layout</bdi>، <bdi dir="ltr">Background</bdi>، <bdi dir="ltr">Live <bdi dir="ltr">Background</bdi></bdi>، <bdi dir="ltr">Animation</bdi>، <bdi dir="ltr">Motion</bdi>، <bdi dir="ltr">Statistics</bdi>، <bdi dir="ltr">Colors</bdi>، <bdi dir="ltr">Surface</bdi>، <bdi dir="ltr">Radius</bdi>، <bdi dir="ltr">Shadow</bdi>، <bdi dir="ltr">Density</bdi>، <bdi dir="ltr">Font scale</bdi> و <bdi dir="ltr">Page width</bdi></p>
 
-<p dir="rtl" align="right">▪&nbsp; امکان تغییر نحوه نمایش Configها، تعداد ستون‌ها، ترتیب Sectionها و نمایش یا مخفی کردن بخش‌هایی مانند Usage، Configs، Install <bdi dir="ltr">WireGuard</bdi> و <bdi dir="ltr">Support</bdi></p>
+<p dir="rtl" align="right">▪&nbsp; امکان تغییر نحوه نمایش Configها، تعداد ستون‌ها، ترتیب Sectionها و نمایش یا مخفی کردن بخش‌هایی مانند Usage، Configs، Install <bdi dir="ltr">AmneziaWG</bdi> و <bdi dir="ltr">Support</bdi></p>
 
 <p dir="rtl" align="right">▪&nbsp; امکان تغییر <bdi dir="ltr">Header</bdi>، <bdi dir="ltr">Title</bdi>، <bdi dir="ltr">Subtitle</bdi>، <bdi dir="ltr">Header</bdi> icon، <bdi dir="ltr">Logo</bdi> size و <bdi dir="ltr">Alignment</bdi></p>
 
@@ -57,9 +85,9 @@
 
 <p dir="rtl" align="right">▪&nbsp; Peerها و Interfaceهای <bdi dir="ltr">Node</bdi> بدون نیاز به ورود مستقیم به سرور <bdi dir="ltr">Node</bdi> از پنل اصلی قابل مدیریت هستند</p>
 
-<p dir="rtl" align="right">▪&nbsp; دارای <b>اسکریپت جداگانه برای نصب و تنظیم Panel و <bdi dir="ltr">Node</bdi></b> شامل <bdi dir="ltr">Virtual Environment</bdi>، <bdi dir="ltr">Requirements</bdi>، <bdi dir="ltr">WireGuard</bdi>، تنظیمات <code>.env</code>، <bdi dir="ltr">Runtime</bdi> و <bdi dir="ltr">Telegram</bdi></p>
+<p dir="rtl" align="right">▪&nbsp; دارای <b>اسکریپت جداگانه برای نصب و تنظیم Panel و <bdi dir="ltr">Node</bdi></b> شامل <bdi dir="ltr">Virtual Environment</bdi>، <bdi dir="ltr">Requirements</bdi>، <bdi dir="ltr">AmneziaWG</bdi>، تنظیمات <code>.env</code>، <bdi dir="ltr">Runtime</bdi> و <bdi dir="ltr">Telegram</bdi></p>
 
-<p dir="rtl" align="right">▪&nbsp; <b>Backup و <bdi dir="ltr">Restore</bdi> کامل</b> از <bdi dir="ltr">Database</bdi>، <bdi dir="ltr">Settings</bdi>، Subscriptionها، Short Links، Profileها، Interfaceها، Peerها و Configهای <bdi dir="ltr">WireGuard</bdi> مربوط به <bdi dir="ltr">Local</bdi> و <bdi dir="ltr">Node</bdi></p>
+<p dir="rtl" align="right">▪&nbsp; <b>Backup و <bdi dir="ltr">Restore</bdi> کامل</b> از <bdi dir="ltr">Database</bdi>، <bdi dir="ltr">Settings</bdi>، Subscriptionها، Short Links، Profileها، Interfaceها، Peerها و Configهای <bdi dir="ltr">AmneziaWG</bdi> مربوط به <bdi dir="ltr">Local</bdi> و <bdi dir="ltr">Node</bdi></p>
 
 <p dir="rtl" align="right">▪&nbsp; پشتیبانی از <bdi dir="ltr">Manual Backup</bdi> و <bdi dir="ltr"><bdi dir="ltr">Auto</bdi> Backup</bdi>، دانلود Backup، ارسال به <bdi dir="ltr">Telegram</bdi>، مشاهده آخرین Backup و <bdi dir="ltr">Inspect</bdi> قبل از <bdi dir="ltr">Restore</bdi></p>
 
@@ -123,7 +151,7 @@
 <li>این تنظیم برای Interfaceهای Local و Interfaceهای Node قابل استفاده است</li>
 <li>تنظیم Endpoint پیش‌فرض از قسمت Settings و بخش Interface انجام میشود</li>
 <li>Host میتواند Domain یا IP باشد</li>
-<li>Port میتواند Port واقعی WireGuard مربوط به همان Interface باشد</li>
+<li>Port میتواند Port واقعی AmneziaWG مربوط به همان Interface باشد</li>
 <li>با خالی کردن Host و Port، دوباره Automatic Endpoint Detection فعال میشود</li>
 <li>Endpoint پیش‌فرض روی Configهایی که از آن Interface Export میشوند استفاده میشود</li>
 <li>Peerهایی که Endpoint اختصاصی برای آنها تعیین شده است میتوانند مقدار جداگانه خود را داشته باشند</li>
@@ -241,7 +269,7 @@ client.example.com:51820
 <div dir="ltr" align="left">
 
 ```
-sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/Azumi67/WG_Panel/refs/heads/main/wg.sh)"'
+sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/wg.sh)"'
 ```
 
 </div>
@@ -269,7 +297,7 @@ wgpanel
 <div dir="ltr" align="left">
 
 ```
-sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/Azumi67/WG_Panel/refs/heads/main/agent/node.sh)"'
+sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/agent/node.sh)"'
 ```
 
 </div>

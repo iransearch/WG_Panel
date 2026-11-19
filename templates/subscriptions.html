@@ -184,7 +184,7 @@
             <span id="subx-live-state">Waiting for first refresh…</span>
           </div>
         </div>
-        <p>Manage each client as one access policy across local and remote WireGuard configs.</p>
+        <p>Manage each client as one access policy across local and remote AmneziaWG configs.</p>
       </div>
     </div>
     <div class="subx-top-actions">
@@ -221,7 +221,7 @@
   <div id="subs-empty" class="subx-empty" hidden>
     <i class="fas fa-inbox"></i>
     <b>No clients configured</b>
-    <span>Create a client policy, then attach one or more local or remote WireGuard configs.</span>
+    <span>Create a client policy, then attach one or more local or remote AmneziaWG configs.</span>
   </div>
 </div>
 
@@ -285,7 +285,7 @@
           <div class="subx-edit-clean-icon"><i class="fas fa-circle-check"></i></div>
           <div class="subx-edit-clean-text">
             <div class="subx-section-title">Existing configs stay attached</div>
-            <p>You are editing client details, shared limits, and optional WireGuard defaults only. The linked local/node configs stay connected automatically.</p>
+            <p>You are editing client details, shared limits, and optional AmneziaWG defaults only. The linked local/node configs stay connected automatically.</p>
             <small>Use <b>More information</b> after saving when you want to review configs, labels, flags, or ordering.</small>
           </div>
         </section>
@@ -319,7 +319,7 @@
               <span class="adv8-copy">
                 <span class="advanced-inline-title">
                   <span class="advanced-optional-badge"><i class="fas fa-sparkles"></i> Optional</span>
-                  <b>Advanced WireGuard options</b>
+                  <b>Advanced AmneziaWG options</b>
                   <small>Routes, endpoints, DNS, MTU, and keepalive</small>
                 </span>
               </span>
@@ -395,7 +395,7 @@
     <label class="adv11-fixed-input">
       <span class="adv11-fixed-label">Stable public host and UDP port</span>
       <span class="adv123-fixed-input-row"><input class="input" id="sub-peer-endpoint" name="peer_endpoint" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Example: client.example.com:51820"><button type="button" id="sub-fixed-client-clear" class="adv123-fixed-clear" title="Clear fixed endpoint" aria-label="Clear fixed endpoint"><i class="fas fa-xmark"></i></button></span>
-      <small>Suitable for a stable public client endpoint, or a UDP load-balancer / HA frontend that keeps a consistent WireGuard flow and reachable UDP port.</small>
+      <small>Suitable for a stable public client endpoint, or a UDP load-balancer / HA frontend that keeps a consistent AmneziaWG flow and reachable UDP port.</small>
     </label>
   </div>
   <details class="adv11-fixed-guide adv123-fixed-guide" id="sub-fixed-client-info">
@@ -405,8 +405,8 @@
     </summary>
     <div class="adv11-guide-body">
       <article class="adv11-guide-point ok"><i class="fas fa-check"></i><span><b>Good fit</b><small>Office gateways, branch routers, dedicated servers, or a stable UDP load-balancer / HA frontend that preserves the peer flow and return path.</small></span></article>
-      <article class="adv11-guide-point warn"><i class="fas fa-triangle-exclamation"></i><span><b>Leave blank</b><small>Phones, roaming laptops, CGNAT users, changing home addresses, or ordinary HTTP/TCP load balancers. WireGuard requires a reachable UDP endpoint.</small></span></article>
-      <article class="adv11-guide-point note"><i class="fas fa-arrow-right-arrow-left"></i><span><b>What happens</b><small>The panel stores this value on the server-side peer. WireGuard sends encrypted UDP traffic to that exact host and port until the endpoint is changed.</small></span></article>
+      <article class="adv11-guide-point warn"><i class="fas fa-triangle-exclamation"></i><span><b>Leave blank</b><small>Phones, roaming laptops, CGNAT users, changing home addresses, or ordinary HTTP/TCP load balancers. AmneziaWG requires a reachable UDP endpoint.</small></span></article>
+      <article class="adv11-guide-point note"><i class="fas fa-arrow-right-arrow-left"></i><span><b>What happens</b><small>The panel stores this value on the server-side peer. AmneziaWG sends encrypted UDP traffic to that exact host and port until the endpoint is changed.</small></span></article>
     </div>
   </details>
 </div>
@@ -595,7 +595,7 @@
                   </details>
                 </article>                <article class="studio24-module" data-module-editor="install">
                   <header class="studio24-module-head">
-                    <div class="studio24-module-id"><span><i class="fas fa-mobile-screen-button"></i></span><div><b>Install</b><small>WireGuard application shortcuts</small></div></div>
+                    <div class="studio24-module-id"><span><i class="fas fa-mobile-screen-button"></i></span><div><b>Install</b><small>AmneziaWG application shortcuts</small></div></div>
                     <div class="studio24-actions">
                       <button type="button" data-module-up="install" title="Move earlier"><i class="fas fa-arrow-up"></i><span>Up</span></button>
                       <button type="button" data-module-down="install" title="Move later"><i class="fas fa-arrow-down"></i><span>Down</span></button>
@@ -756,7 +756,7 @@
           <section class="studio8-panel" data-studio8-panel="content" hidden>
             <div class="studio8-section-head"><div><b>Content</b><small>Choose which sections and supporting details are visible.</small></div></div>
             <div class="studio8-toggle-grid">
-              <label class="studio8-toggle-card"><input type="checkbox" id="show-install"><span class="studio8-toggle"></span><span><b>Install section</b><small>Official WireGuard app links.</small></span></label>
+              <label class="studio8-toggle-card"><input type="checkbox" id="show-install"><span class="studio8-toggle"></span><span><b>Install section</b><small>Official AmneziaWG app links.</small></span></label>
               <label class="studio8-toggle-card"><input type="checkbox" id="show-support"><span class="studio8-toggle"></span><span><b>Support section</b><small>Configured contact channels.</small></span></label>
               <label class="studio8-toggle-card"><input type="checkbox" id="show-live-badge"><span class="studio8-toggle"></span><span><b>Live badge</b><small>Live indicator in the hero.</small></span></label>
               <label class="studio8-toggle-card"><input type="checkbox" id="show-status-badge"><span class="studio8-toggle"></span><span><b>Config status</b><small>Online state on location cards.</small></span></label>
@@ -779,7 +779,7 @@
             <div class="studio8-field-grid two content-heading-grid">
               <label class="content-heading-field"><span><b>Usage heading</b><small>Shown above data and time information.</small></span><input class="input" id="portal-usage-title" placeholder="Usage overview"></label>
               <label class="content-heading-field"><span><b>Configurations heading</b><small>Shown above available locations and configs.</small></span><input class="input" id="portal-configs-title" placeholder="Configs"></label>
-              <label class="content-heading-field"><span><b>Installation heading</b><small>Shown above WireGuard application links.</small></span><input class="input" id="portal-install-title" placeholder="Install WireGuard"></label>
+              <label class="content-heading-field"><span><b>Installation heading</b><small>Shown above AmneziaWG application links.</small></span><input class="input" id="portal-install-title" placeholder="Install AmneziaWG"></label>
               <label class="content-heading-field"><span><b>Support heading</b><small>Shown above configured contact methods.</small></span><input class="input" id="portal-support-title" placeholder="Support"></label>
             </div>
           </section>
@@ -812,9 +812,9 @@
 <section class="studio92-card studio92-copy-card">
       <header><span><i class="fas fa-font"></i></span><div><b>Header copy</b><small>Public header text.</small></div></header>
       <div class="studio92-field-grid two studio10-copy-grid">
-        <label><span>Header label <em id="studio92-label-count">0/40</em></span><input class="input" id="portal-label" maxlength="40" placeholder="Secure WireGuard portal"></label>
+        <label><span>Header label <em id="studio92-label-count">0/40</em></span><input class="input" id="portal-label" maxlength="40" placeholder="Secure AmneziaWG portal"></label>
         <label><span>Custom title <em id="studio92-title-count">0/48</em></span><input class="input" id="portal-title" maxlength="48" placeholder="Empty = client name"></label>
-        <label class="wide"><span>Subtitle <em id="studio92-subtitle-count">0/150</em></span><textarea class="input" id="portal-subtitle" maxlength="150" rows="3" placeholder="Install WireGuard, then scan QR or import a config."></textarea></label>
+        <label class="wide"><span>Subtitle <em id="studio92-subtitle-count">0/150</em></span><textarea class="input" id="portal-subtitle" maxlength="150" rows="3" placeholder="Install AmneziaWG, then scan QR or import a config."></textarea></label>
       </div>
       <div class="studio92-copy-actions"><button type="button" id="studio92-copy-default"><i class="fas fa-wand-magic-sparkles"></i><span>Use recommended copy</span></button><button type="button" id="studio92-title-client"><i class="fas fa-user"></i><span>Use client name</span></button></div>
     </section>
@@ -897,7 +897,7 @@
         <label><input type="checkbox" id="profile-include-interfaces" checked><span><i class="fas fa-network-wired"></i><b>Selected interfaces</b><small>Best-effort matching of local and node interfaces.</small></span></label>
         <label><input type="checkbox" id="profile-include-template" checked><span><i class="fas fa-wand-magic-sparkles"></i><b>Public template</b><small>Every Template Studio customization and support link.</small></span></label>
       </div>
-      <div class="profile8-note"><i class="fas fa-circle-info"></i><span>The existing peer profiles contain only basic WireGuard defaults. Subscription profiles are separate because they also preserve subscription limits, interfaces, and the complete public-page design.</span></div>
+      <div class="profile8-note"><i class="fas fa-circle-info"></i><span>The existing peer profiles contain only basic AmneziaWG defaults. Subscription profiles are separate because they also preserve subscription limits, interfaces, and the complete public-page design.</span></div>
     </div>
     <footer><button type="button" class="btn secondary" id="subscription-profile-cancel">Cancel</button><button type="button" class="btn" id="subscription-profile-confirm"><i class="fas fa-save"></i> Save profile</button></footer>
   </div>
