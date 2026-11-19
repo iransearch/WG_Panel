@@ -75,7 +75,7 @@ TAG_RUN  = "[RUN]"
 
 
 REPO_URL = "https://github.com/iransearch/WG_Panel"
-REPO_REF = "feature/amneziawg"
+REPO_REF = "main"
 REPO_DIRNAME_DEFAULT = "WG_Panel"
 
 
@@ -3896,7 +3896,7 @@ def update_project(root: Path):
 
         if rc != 0:
             raise RuntimeError(
-                "Could not download the AmneziaWG branch."
+                "Could not download the main branch."
             )
 
         if not _sync_project_code(source, root):

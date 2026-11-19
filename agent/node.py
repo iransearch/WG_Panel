@@ -223,7 +223,7 @@ AGENT_DIR = Path(__file__).resolve().parent
 ROOT_MARKER = Path.home() / ".wg_node_root.json"
 
 DEFAULT_CLONE_DIR = Path("/usr/local/bin/wg_panel")
-DEFAULT_GIT_REF = "feature/amneziawg"
+DEFAULT_GIT_REF = "main"
 DEFAULT_GIT_URL = "https://github.com/iransearch/WG_Panel.git"
 
 def _write(p: Path, text: str):

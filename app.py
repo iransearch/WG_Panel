@@ -99,7 +99,7 @@ def _project_version() -> str:
 
 PANEL_VERSION = _project_version()
 PANEL_REPO = "iransearch/WG_Panel"
-PANEL_REPO_REF = "feature/amneziawg"
+PANEL_REPO_REF = "main"
 PANEL_UPDATE_TTL = 1800
 _PANEL_UPDATE_CACHE = {
     "ts": 0,
@@ -7219,7 +7219,7 @@ def backup_node_agent_install_command():
             api_key = ''
         base_url = getattr(node, 'base_url', '') or ''
 
-    command = """sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/agent/node.sh)"'"""
+    command = """sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/main/agent/node.sh)"'"""
 
     return jsonify(
         ok=True,

@@ -5,7 +5,7 @@ import argparse, datetime as dt, json, os, shutil, subprocess, sys, tarfile, tem
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-REPO_REF = "feature/amneziawg"
+REPO_REF = "main"
 
 EXCLUDES = {
     ".git", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
@@ -118,7 +118,7 @@ def github_main_metadata(repo: str) -> dict:
 
 
 def download_repo(repo: str, target: str, dest: Path) -> dict:
-    """Download the AmneziaWG branch without making GitHub API availability a prerequisite."""
+    """Download the panel branch without making GitHub API availability a prerequisite."""
     urls = [
         f"https://codeload.github.com/{repo}/tar.gz/refs/heads/{REPO_REF}",
         f"https://github.com/{repo}/archive/refs/heads/{REPO_REF}.tar.gz",

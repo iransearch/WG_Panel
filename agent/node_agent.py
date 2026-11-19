@@ -3039,7 +3039,7 @@ def _node_version() -> str:
 
 
 NODE_REPO = "iransearch/WG_Panel"
-NODE_REPO_REF = "feature/amneziawg"
+NODE_REPO_REF = "main"
 
 def _node_root():
     configured = (os.getenv("WG_PANEL_ROOT") or "").strip()

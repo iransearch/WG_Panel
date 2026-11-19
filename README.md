@@ -8,10 +8,13 @@
 
 ### نصب روی Debian / Ubuntu
 
+دستورهای زیر را با کاربر `root` اجرا کنید.
+
 ```bash
-git clone --branch feature/amneziawg https://github.com/iransearch/WG_Panel.git
-cd WG_Panel
-sudo bash wg.sh --wg-py "$PWD/wg.py"
+apt-get update && apt-get install -y git ca-certificates &&
+git clone --branch main https://github.com/iransearch/WG_Panel.git &&
+cd WG_Panel &&
+bash wg.sh --wg-py "$PWD/wg.py"
 ```
 
 <div dir="rtl">
@@ -269,7 +272,7 @@ client.example.com:51820
 <div dir="ltr" align="left">
 
 ```
-sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/wg.sh)"'
+sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/main/wg.sh)"'
 ```
 
 </div>
@@ -297,7 +300,7 @@ wgpanel
 <div dir="ltr" align="left">
 
 ```
-sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/feature/amneziawg/agent/node.sh)"'
+sudo bash -c 'command -v curl >/dev/null 2>&1 || (apt-get update -y && apt-get install -y curl ca-certificates); bash -c "$(curl -fsSL https://raw.githubusercontent.com/iransearch/WG_Panel/refs/heads/main/agent/node.sh)"'
 ```
 
 </div>
