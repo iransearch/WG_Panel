@@ -1,4 +1,5 @@
 import os
+from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -133,6 +134,73 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.panel._expire()
         block.assert_called_once_with(sub, 'subscription_expired')
         self.assertEqual((peer.bytes_offset, peer.used_bytes_total), (400, 800))
+
+    def test_irspeedy_allocates_beyond_200000_occupied_hosts(self):
+        subnet = ip_network('10.64.0.0/14')
+        first_ip = int(subnet.network_address) + 1
+        occupied = {ip_address(i) for i in range(first_ip, first_ip + 200_000)}
+        iface = InterfaceConfig(
+            name='test-awg', path='/tmp/test-awg.conf', address='10.66.66.1/14',
+            listen_port=51820, private_key='fixture',
+        )
+        db.session.add(iface)
+        db.session.commit()
+
+        saved_hosts = self.panel._db_peer_hosts
+
+        def occupied_hosts(*args, **kwargs):
+            return occupied | saved_hosts(*args, **kwargs)
+
+        with patch.object(self.panel, '_db_peer_hosts', side_effect=occupied_hosts), patch.object(
+            self.panel, '_wg_allowed_ips', return_value=set(),
+        ), patch.object(self.panel, 'install_local_peer'), patch.object(
+            self.panel.subprocess, 'check_output', side_effect=[b'private-test', b'public-test'],
+        ):
+            response = self.client.post(
+                '/api/irspeedy/subscriptions',
+                headers={**self.headers, 'Idempotency-Key': 'f' * 64},
+                json={'name': 'Large pool', 'targets': [{'scope': 'local', 'iface': iface.name}]},
+            )
+            self.assertEqual(response.status_code, 201, response.get_json())
+            allocated = ip_address(first_ip + 200_000)
+            self.assertEqual(Peer.query.one().address, f'{allocated}/14')
+            self.assertEqual(self.panel._available_ips(iface, limit=2), [
+                f'{ip_address(int(allocated) + 1)}/14', f'{ip_address(int(allocated) + 2)}/14',
+            ])
+
+    def test_allocator_observes_live_and_saved_reservations(self):
+        conf = self.lock.with_name('alloc-awg.conf')
+        conf.write_text('[Interface]\nAddress = 10.66.66.1/29\n[Peer]\nAllowedIPs = 10.66.66.4/32\n')
+        iface = InterfaceConfig(
+            name='alloc-awg', path=str(conf), address='10.66.66.1/29',
+            listen_port=51820, private_key='fixture',
+        )
+        db.session.add(Peer(
+            name='Reserved DB', iface=iface, public_key='db-public',
+            private_key='fixture', address='10.66.66.5/29',
+        ))
+        db.session.commit()
+        runtime = b'other-peer\t10.66.66.2/32 10.66.66.3/32\n'
+        with patch.object(self.panel.subprocess, 'check_output', return_value=runtime):
+            self.assertEqual(self.panel.allocate_peer_address(iface), '10.66.66.6/29')
+            self.assertEqual(self.panel._available_ips(iface), ['10.66.66.6/29'])
+            with self.assertRaises(self.panel.AddressConflict):
+                self.panel.allocate_peer_address(iface, requested='10.66.66.3')
+            with self.assertRaises(self.panel.AddressPoolExhausted):
+                self.panel.allocate_peer_address(iface, extra_reserved=['10.66.66.6'])
+
+    def test_large_ipv6_pool_and_point_to_point_bounds(self):
+        with patch.object(self.panel, '_reserved_hosts', side_effect=lambda _, address, **kwargs: {address.ip}):
+            for cidr, expected in [
+                ('fd00::1/64', ['fd00::2/64', 'fd00::3/64']),
+                ('fd00::/127', ['fd00::1/127']),
+                ('10.0.0.0/31', ['10.0.0.1/31']),
+                ('10.0.0.1/32', []),
+            ]:
+                with self.subTest(cidr=cidr), patch.object(
+                    self.panel, 'interface_ip_interface', return_value=ip_interface(cidr),
+                ):
+                    self.assertEqual(self.panel._available_ips(object(), limit=2), expected)
 
     def test_https_html_keeps_upgrade_policy_without_obsolete_directive(self):
         response = self.client.get('/login', base_url='https://localhost')

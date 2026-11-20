@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import os, glob, subprocess, time, shlex, logging, ipaddress, psutil, requests, json, tempfile, sys, zipfile, datetime as dt, ipaddress, platform, re, qrcode, multiprocessing, threading, shutil, signal
 from io import BytesIO
+from itertools import islice
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from flask import (
@@ -11835,8 +11836,8 @@ def _wg_allowed_ips(iface):
             parts = line.split('\t', 1)
             if len(parts) != 2:
                 continue
-            for c in parts[1].split(','):
-                h = _safe_ip(c.strip())
+            for c in parts[1].replace(',', ' ').split():
+                h = _safe_ip(c)
                 if h is not None:
                     used.add(h)
     except Exception:
@@ -11909,7 +11910,8 @@ def _read_iface_conf(conf_path: str | None) -> str | None:
 # ---------------------------
 # Address allocation
 # ---------------------------
-MAX_ENUMERATED_HOSTS = 8192
+# Bound the size of IP suggestions sent to the UI.
+MAX_AVAILABLE_IPS = 8192
 
 
 class AddressAllocationError(Exception):
@@ -11971,12 +11973,26 @@ def interface_ip_interface(iface):
         return None
 
 
-def _usable_hosts(net):
+def _free_hosts(net, reserved):
+    # Walk the gaps between occupied addresses and convert only returned hosts.
+    next_host = int(net.network_address)
+    last_host = int(net.broadcast_address)
+    if net.prefixlen < net.max_prefixlen - 1:
+        next_host += 1
+        if net.version == 4:
+            last_host -= 1
 
-    for index, host in enumerate(net.hosts()):
-        if index >= MAX_ENUMERATED_HOSTS:
-            return
-        yield host
+    address_type = type(net.network_address)
+    occupied = sorted(
+        int(host) for host in reserved
+        if host.version == net.version and next_host <= int(host) <= last_host
+    )
+    for host in occupied:
+        for free in range(next_host, host):
+            yield address_type(free)
+        next_host = host + 1
+    for free in range(next_host, last_host + 1):
+        yield address_type(free)
 
 
 def _db_peer_hosts(iface, exclude_peer_id=None):
@@ -11989,7 +12005,7 @@ def _db_peer_hosts(iface, exclude_peer_id=None):
     for address, address_host in db.session.query(Peer.address, Peer.address_host).filter(
         Peer.iface_id == iface_id,
         Peer.id != exclude_peer_id if exclude_peer_id else True,
-    ):
+    ).yield_per(1000):
         host = _safe_ip(address_host) or _safe_ip(address)
         if host is not None:
             hosts.add(host)
@@ -12082,9 +12098,9 @@ def allocate_peer_address(iface, requested=None, *, exclude_peer_id=None,
             )
         return f'{host}/{net.prefixlen}'
 
-    for candidate in _usable_hosts(net):
-        if candidate not in reserved:
-            return f'{candidate}/{net.prefixlen}'
+    candidate = next(_free_hosts(net, reserved), None)
+    if candidate is not None:
+        return f'{candidate}/{net.prefixlen}'
 
     raise AddressPoolExhausted(f'No free client address left in {net}.')
 
@@ -12409,7 +12425,7 @@ def interface_allocation_lock(iface):
             handle.close()
 
 
-def _available_ips(iface, limit=MAX_ENUMERATED_HOSTS):
+def _available_ips(iface, limit=MAX_AVAILABLE_IPS):
 
     if not iface:
         return []
@@ -12422,14 +12438,10 @@ def _available_ips(iface, limit=MAX_ENUMERATED_HOSTS):
         net = ip_iface.network
         reserved = _reserved_hosts(iface, ip_iface)
 
-        out = []
-        for host in _usable_hosts(net):
-            if host in reserved:
-                continue
-            out.append(f'{host}/{net.prefixlen}')
-            if len(out) >= limit:
-                break
-        return out
+        return [
+            f'{host}/{net.prefixlen}'
+            for host in islice(_free_hosts(net, reserved), max(0, limit))
+        ]
 
     except Exception as e:
         current_app.logger.exception(
