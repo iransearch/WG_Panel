@@ -45,6 +45,7 @@ from auth import require_api_key, admin_required, require_api_key_or_login
 from panel_core.security import hash_recovery, verify_recovery, generate_recovery_codes as _gen_recovery
 from panel_core.profiles import register_profile_routes, panel_default_dns as _panel_default_dns
 from panel_core.subscription_policy import compute_subscription_access, effective_peer_state
+from panel_core.irspeedy_feed import share_uri as _irspeedy_share_uri
 from panel_core import node_client as _node_client
 from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
@@ -28576,6 +28577,66 @@ def _subscription_page():
     }
 
 
+def _irspeedy_local_interface(name, legacy_id):
+    if name is not None:
+        if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}', name):
+            return None
+        iface = InterfaceConfig.query.filter_by(name=name).first()
+    elif type(legacy_id) is int and 0 < legacy_id <= 2147483647:
+        iface = db.session.get(InterfaceConfig, legacy_id)
+    else:
+        return None
+
+    return iface if iface is not None and not _iface_is_node(iface) else None
+
+
+@app.get('/api/irspeedy/capabilities')
+@require_api_key_or_login
+def api_irspeedy_capabilities():
+    iface = _irspeedy_local_interface(request.args.get('iface'), request.args.get('iface_id', type=int))
+    if iface is None:
+        return jsonify(error='local_interface_not_found'), 404
+    return jsonify(version=1, iface=iface.name, iface_id=iface.id, scope='local')
+
+
+def _irspeedy_subscription_response(sub, status):
+    return jsonify(
+        ok=True,
+        subscription={
+            'id': sub.id,
+            'feed_url': url_for('irspeedy_subscription_links', token=sub.token, _external=True),
+        },
+    ), status
+
+
+@app.post('/api/irspeedy/subscriptions')
+@require_api_key_or_login
+def api_irspeedy_subscriptions():
+    provision_token = request.headers.get('Idempotency-Key', '')
+    if not re.fullmatch(r'[0-9a-f]{64}', provision_token):
+        return jsonify(error='invalid_idempotency_key'), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(error='invalid_request'), 400
+    targets = data.get('targets')
+    if (not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict)
+            or targets[0].get('scope') != 'local' or targets[0].get('peer_id')):
+        return jsonify(error='local_interface_required'), 400
+
+    existing = Subscription.query.filter_by(token=provision_token).first()
+    if existing:
+        return _irspeedy_subscription_response(existing, 200)
+
+    target = targets[0]
+    iface = _irspeedy_local_interface(target.get('iface'), target.get('iface_id'))
+    if iface is None:
+        return jsonify(error='local_interface_not_found'), 404
+
+    # Use the resolved local record even if a client supplied both fields.
+    target['iface_id'] = iface.id
+    return _create_subscription(data, provision_token)
+
+
 @app.route('/api/subscriptions', methods=['GET', 'POST'])
 @require_api_key_or_login
 def api_subscriptions():
@@ -28584,12 +28645,15 @@ def api_subscriptions():
             return jsonify(_subscription_page())
         rows = _subscription_list_query().order_by(Subscription.created_at.desc(), Subscription.id.desc()).all()
         return jsonify(subscriptions=[_subscription_row(sub, read_only=True) for sub in rows])
-    data = request.get_json(silent=True) or {}
+    return _create_subscription(request.get_json(silent=True) or {})
+
+
+def _create_subscription(data, provision_token=None):
     created_ts = now_ts()
     sub = Subscription(
         name=(data.get('name')or 'Subscription').strip(),
 
-        token=_token(),
+        token=provision_token or _token(),
 
         created_at=from_ts(created_ts),
         timer_started_at=from_ts(created_ts),
@@ -28614,7 +28678,15 @@ def api_subscriptions():
     )
     _apply_subscription_timer(sub)
     db.session.add(sub)
-    db.session.flush()
+    try:
+        db.session.flush()
+    except IntegrityError:
+        db.session.rollback()
+        if provision_token:
+            existing = Subscription.query.filter_by(token=provision_token).first()
+            if existing:
+                return _irspeedy_subscription_response(existing, 200)
+        raise
     targets = data.get('targets') or []
     compensation = PeerCreateCompensation()
     try:
@@ -28625,6 +28697,8 @@ def api_subscriptions():
             )
         _sync_all_subscription_peers(sub, rename=True)
         db.session.commit()
+        if provision_token:
+            return _irspeedy_subscription_response(sub, 201)
         return jsonify(ok=True, subscription=_subscription_row(sub)), 201
     except AddressAllocationError as e:
         cleanup_failures = compensation.rollback()
@@ -29765,6 +29839,37 @@ def subscription_public_page(
 def subscription_public_api(token):
     sub = Subscription.query.filter_by(token=token).first() or abort(404)
     return jsonify(subscription=_subscription_public_payload(sub))
+
+
+@app.get('/s/<token>/links')
+def irspeedy_subscription_links(token):
+    # The token has the same access semantics as the other public subscription URLs.
+    sub = Subscription.query.filter_by(token=token).first() or abort(404)
+    revoked = _subscription_access_or_403(sub)
+    if revoked:
+        return revoked
+
+    uris = []
+    for link in sorted(sub.links, key=lambda item: (item.sort_order or 0, item.id)):
+        peer = link.peer
+        if not peer or peer.status in ('blocked', 'disabled', 'removed'):
+            continue
+        config, error = _peer_client_conf_or_502(peer)
+        if error:
+            return error
+        try:
+            uris.append(_irspeedy_share_uri(config, link.location_label or peer.name))
+        except ValueError:
+            return jsonify(error='share_link_unavailable'), 502
+
+    if not uris:
+        return jsonify(error='no_active_config'), 404
+    response = make_response('\n'.join(uris) + '\n', 200)
+    response.headers['Content-Type'] = 'text/plain; charset=utf-8'
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    return response
 
 
 @app.get('/s/<token>/config', endpoint='subscription_public_config')
