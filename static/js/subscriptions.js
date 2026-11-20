@@ -442,14 +442,48 @@ function closeSettings(){
   subxUpdateModalBodyState();
 }
 
+let templateStudioLoad;
+let templateStudioOpening = false;
+
+function onTemplateStudioReady(initialize){
+  $('#sub-settings-modal').addEventListener('subscription-studio-ready', initialize, {once:true});
+}
+
+function ensureTemplateStudio(){
+  if (!templateStudioLoad) {
+    const modal = $('#sub-settings-modal');
+    templateStudioLoad = (async () => {
+      const response = await fetch(modal.dataset.contentUrl, {
+        credentials:'same-origin', redirect:'error', signal:AbortSignal.timeout(15000),
+      });
+      if (!response.ok) throw new Error('Could not load the template editor.');
+      const template = document.createElement('template');
+      template.innerHTML = await response.text();
+      if (!template.content.querySelector('#sub-settings-title')) {
+        throw new Error('Could not load the template editor.');
+      }
+      modal.replaceChildren(template.content);
+      modal.dispatchEvent(new Event('subscription-studio-ready'));
+    })().catch(error => {
+      templateStudioLoad = null;
+      throw error;
+    });
+  }
+  return templateStudioLoad;
+}
+
 async function loadSubscriptionSettings(sid=null){
-  SUB_STUDIO_TARGET_ID = sid == null ? null : Number(sid);
-  const endpoint = SUB_STUDIO_TARGET_ID
-    ? `/api/subscriptions/${SUB_STUDIO_TARGET_ID}/portal-settings`
+  const targetId = sid == null ? null : Number(sid);
+  const endpoint = targetId
+    ? `/api/subscriptions/${targetId}/portal-settings`
     : '/api/subscriptions/settings';
-  const r = await fetch(endpoint, {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
+  const [r] = await Promise.all([
+    fetch(endpoint, {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)}),
+    ensureTemplateStudio(),
+  ]);
   const j = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(j.detail || j.message || j.error || 'Could not load template settings.');
+  SUB_STUDIO_TARGET_ID = targetId;
   if(SUB_STUDIO_TARGET_ID){
     SUB_STUDIO_TARGET_NAME = j.subscription_name || (SUBS.find(x=>Number(x.id)===SUB_STUDIO_TARGET_ID)?.name || `Client #${SUB_STUDIO_TARGET_ID}`);
     SUB_STUDIO_HAS_OVERRIDE = !!j.has_override;
@@ -496,11 +530,14 @@ function updateStudioTargetUI(){
   }
 }
 
-async function openClientTemplateStudio(sid){
+async function openClientTemplateStudio(sid=null){
+  if (templateStudioOpening) return;
+  templateStudioOpening = true;
   try{
     await loadSubscriptionSettings(sid);
     openSettings();
   }catch(err){toastBad(err.message||String(err));}
+  finally{templateStudioOpening = false;}
 }
 function applySettingsToForm(){
   const s = SUB_SETTINGS || {layout:'aurora', support:{}};
@@ -1685,12 +1722,11 @@ function payloadFromForm() {
 $('#open-sub-modal').onclick=openCreate; $('#sub-close').onclick=closeModal; $('#sub-cancel').onclick=closeModal;
 $('#details-close').onclick=closeDetails;
 
-$('#open-sub-settings').onclick=async()=>{ try{await loadSubscriptionSettings(null);openSettings();}catch(err){toastBad(err.message||String(err));} };
-$('#settings-close').onclick=closeSettings;
-$('#settings-cancel').onclick=closeSettings;
-$('#settings-save').onclick=saveSubscriptionSettings;
-$('#sub-settings-modal').addEventListener('click',e=>{if(e.target.dataset.closeSettings) closeSettings();});
-document.querySelectorAll('input[name="sub-layout"]').forEach(r=>r.addEventListener('change',()=>updateLayoutPreview(r.value)));
+$('#open-sub-settings').onclick=()=>openClientTemplateStudio();
+$('#sub-settings-modal').addEventListener('click',e=>{
+  if(e.target.closest('#settings-close, #settings-cancel, [data-close-settings]')) closeSettings();
+  if(e.target.closest('#settings-save')) saveSubscriptionSettings();
+});
 
 $('#sub-modal').addEventListener('click',e=>{if(e.target.dataset.close) closeModal();});
 $('#details-modal').addEventListener('click',e=>{if(e.target.dataset.closeDetails) closeDetails();});
@@ -2547,9 +2583,6 @@ function updateLayoutPreview(layout){
   const title=$('#preview-title'); if(title) title.textContent=$('#portal-title')?.value||'premium-user';
   const sub=$('#preview-subtitle'); if(sub) sub.textContent=$('#portal-subtitle')?.value||'Install AmneziaWG, then scan QR or import a config.';
 }
-['portal-label','portal-title','portal-subtitle','portal-icon','portal-animation'].forEach(id=>document.getElementById(id)?.addEventListener('input',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
-document.querySelectorAll('input[name="sub-display-mode"]').forEach(r=>r.addEventListener('change',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
-
 const SUBX_LIST = {
   q: '',
   status: 'all',
@@ -3103,7 +3136,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
 })();
 
 
-(() => {
+onTemplateStudioReady(() => {
   'use strict';
   const q=(s,r=document)=>r.querySelector(s), qa=(s,r=document)=>[...r.querySelectorAll(s)];
   const defaults={font_family:'rounded',background_pattern:'none',layout:'ps5',background:'orbits',display_mode:'hybrid',animation:'cinematic',entrance_animation:'stagger',hover_animation:'lift',toast_style:'pill',toast_position:'bottom_center',toast_motion:'slide',toast_duration:2200,accent:'violet',primary_color:'#7661ed',secondary_color:'#63a5ff',online_color:'#568eff',offline_color:'#94a3b8',warning_color:'#f59e0b',danger_color:'#ef4444',pill_color:'#64748b',action_color:'#7661ed',custom_primary:'#7661ed',custom_secondary:'#63a5ff',surface:'glass',radius:'rounded',shadow:'deep',density:'comfortable',page_width:'wide',config_style:'cards',config_columns:'two',section_order:'usage_first',module_order:['configs','usage','install','support'],module_enabled:{configs:true,usage:true,install:true,support:true},module_sizes:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_surface:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_spacing:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_radius:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_heading:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_mobile_position:{configs:'auto',usage:'auto',install:'auto',support:'auto'},module_gap:'standard',support_style:'buttons',theme_default:'auto',hero_style:'banner',button_style:'solid',font_scale:'standard',background_intensity:86,card_opacity:82,motion_speed:125,motion_intensity:150,particle_density:90,stat_size:'standard',show_quick_stats:true,show_percentage:true,show_used_detail:true,show_install:true,show_support:true,show_live_badge:true,show_status_badge:true,show_location_country:true,show_download_action:true,show_copy_action:true,show_theme_action:true,show_section_descriptions:true,show_admin_notice:false,notice_title:'Service notice',notice_text:'',notice_tone:'info',notice_style:'banner',notice_position:'after_summary',title_align:'left',logo_size:'medium',portal_label:'Secure AmneziaWG portal',portal_title:'',portal_subtitle:'Your account is ready. Install AmneziaWG, then scan QR or import a config.',portal_icon:'fas fa-bolt',usage_title:'Usage overview',configs_title:'Configs',install_title:'Install AmneziaWG',support_title:'Support',support:{telegram:'',whatsapp:'',phone:'',email:'',website:'',instagram:''}};
@@ -3505,7 +3538,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
   }).observe(settingsModal,{attributes:true,attributeFilter:['aria-hidden']});
   activateTab('layout');updateRangeLabels();updateStudioTokenPreview();
 
-})();
+});
 
 
 (() => {
@@ -3549,7 +3582,7 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
   function interfaceState(){let items=[];try{items=selectedItems()}catch(_){}return items.map(interfaceDescriptor)}
   async function ensureTemplateLoaded(){
     if(q('input[name="sub-layout"]:checked'))return;
-    try{const settings=await request('/api/subscriptions/settings');try{SUB_SETTINGS=settings}catch(_){window.SUB_SETTINGS=settings}window.SubscriptionStudioV9?.apply?.(settings||{})}catch(_){}
+    await loadSubscriptionSettings();
   }
   function profilePayload(){
     const include={client:checked('profile-include-client'),advanced:checked('profile-include-advanced'),interfaces:checked('profile-include-interfaces'),template:checked('profile-include-template')};
@@ -3618,18 +3651,16 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
       return;
     }
 
-    if (checked('profile-include-template')) await ensureTemplateLoaded();
-
-    const profile = profilePayload();
-    if (!Object.values(profile.include).some(Boolean)) {
-      notify(false, 'Select at least one profile section.');
-      return;
-    }
-
     const saveButton = q('#subscription-profile-confirm');
     if (saveButton) saveButton.disabled = true;
 
     try {
+      if (checked('profile-include-template')) await ensureTemplateLoaded();
+      const profile = profilePayload();
+      if (!Object.values(profile.include).some(Boolean)) {
+        notify(false, 'Select at least one profile section.');
+        return;
+      }
       const wasUpdate = !!updatingName;
       const j = await request('/api/subscription_profiles', {
         method: 'POST',
@@ -3656,7 +3687,24 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     }
     SCOPE='all';SEARCH='';q('#inbound-search')&&(q('#inbound-search').value='');renderPicker();const items=sourceItems();qa('#inbound-list input[type="checkbox"]').forEach(box=>{const item=items[Number(box.value)];box.checked=descriptors.some(d=>matches(item,d))});updateSelected();
   }
-  async function applyProfile(scope){const name=selectedName(scope);if(!name){notify(false,'Choose a subscription profile first.');return}try{const j=await request(`/api/subscription_profiles/${encodeURIComponent(name)}`),p=j.profile||{};if(p.client)applyClient(p.client);if(p.advanced)window.SubscriptionAdvancedV9?.applyState?.(p.advanced);if(p.template)window.SubscriptionStudioV9?.apply?.(p.template);if(p.interfaces)await applyInterfaces(p.interfaces,p.client?.mode||'new');notify(true,`Applied profile “${name}”.`)}catch(err){notify(false,'Profile apply failed: '+err.message)}}
+  async function applyProfile(scope){
+    const name = selectedName(scope);
+    if (!name) {
+      notify(false, 'Choose a subscription profile first.');
+      return;
+    }
+    try {
+      const {profile = {}} = await request(`/api/subscription_profiles/${encodeURIComponent(name)}`);
+      if (profile.template) await ensureTemplateStudio();
+      if (profile.client) applyClient(profile.client);
+      if (profile.advanced) window.SubscriptionAdvancedV9?.applyState?.(profile.advanced);
+      if (profile.template) window.SubscriptionStudioV9.apply(profile.template);
+      if (profile.interfaces) await applyInterfaces(profile.interfaces, profile.client?.mode || 'new');
+      notify(true, `Applied profile “${name}”.`);
+    } catch (err) {
+      notify(false, 'Profile apply failed: ' + err.message);
+    }
+  }
 
   async function setDefaultProfile(scope){const name=selectedName(scope);if(!name){notify(false,'Choose a profile first.');return}try{await request(`/api/subscription_profiles/${encodeURIComponent(name)}/activate`,{method:'POST',body:'{}'});await loadProfiles(name);notify(true,`“${name}” is now the default profile.`)}catch(err){notify(false,'Could not set default profile: '+err.message)}}
   function profileTextPrompt(title, initialValue = '') {
@@ -3754,11 +3802,30 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
       notify(false, 'Profile delete failed: ' + err.message);
     }
   }
+  function bindProfileControls(scope){
+    const prefix = scope === 'studio' ? '#studio-profile-' : '#sub-profile-';
+    q(prefix + 'apply')?.addEventListener('click', () => applyProfile(scope));
+    q(prefix + 'save')?.addEventListener('click', () => openSave(scope));
+    q(prefix + 'update')?.addEventListener('click', () => {
+      if (selectedName(scope)) openSave(scope, {update:true});
+      else notify(false, 'Choose a profile to update.');
+    });
+    q(prefix + 'default')?.addEventListener('click', () => setDefaultProfile(scope));
+    q(prefix + 'rename')?.addEventListener('click', () => renameProfile(scope));
+    q(prefix + 'delete')?.addEventListener('click', () => deleteProfile(scope));
+    const select = q(prefix + 'select');
+    select?.addEventListener('change', () => {
+      for (const other of profileSelects()) {
+        if (other !== select) other.value = select.value;
+      }
+    });
+  }
+  onTemplateStudioReady(() => {
+    bindProfileControls('studio');
+    syncSelects(q('#sub-profile-select')?.value || activeProfile);
+  });
   function wire(){
-    q('#sub-profile-apply')?.addEventListener('click',()=>applyProfile('create'));q('#studio-profile-apply')?.addEventListener('click',()=>applyProfile('studio'));
-    q('#sub-profile-save')?.addEventListener('click',()=>openSave('create'));q('#studio-profile-save')?.addEventListener('click',()=>openSave('studio'));
-    q('#sub-profile-update')?.addEventListener('click',()=>{if(selectedName('create'))openSave('create',{update:true});else notify(false,'Choose a profile to update.')});q('#studio-profile-update')?.addEventListener('click',()=>{if(selectedName('studio'))openSave('studio',{update:true});else notify(false,'Choose a profile to update.')});
-    q('#sub-profile-default')?.addEventListener('click',()=>setDefaultProfile('create'));q('#studio-profile-default')?.addEventListener('click',()=>setDefaultProfile('studio'));q('#sub-profile-rename')?.addEventListener('click',()=>renameProfile('create'));q('#studio-profile-rename')?.addEventListener('click',()=>renameProfile('studio'));q('#sub-profile-delete')?.addEventListener('click',()=>deleteProfile('create'));q('#studio-profile-delete')?.addEventListener('click',()=>deleteProfile('studio'));
+    bindProfileControls('create');
     q('#subscription-profile-confirm')?.addEventListener('click', saveProfile);
     q('#subscription-profile-close')?.addEventListener('click', closeSave);
     q('#subscription-profile-cancel')?.addEventListener('click', closeSave);
@@ -3768,7 +3835,6 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     q('#subscription-profile-modal')?.addEventListener('keydown', e => {
       if (e.key === 'Escape') closeSave();
     });
-    profileSelects().forEach(select=>select.addEventListener('change',()=>{for(const other of profileSelects())if(other!==select)other.value=select.value}));
     loadProfiles();
   }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wire,{once:true});else wire();
@@ -3804,67 +3870,70 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     sync();
   }
 
-  const identityFields={
-    label:q('#portal-label'),title:q('#portal-title'),subtitle:q('#portal-subtitle'),icon:q('#portal-icon')
-  };
-  function count(el,id,max){const out=q(id);if(out)out.textContent=`${(el?.value||'').length}/${max}`}
-  function checked(name,fallback){return q(`input[name="${name}"]:checked`)?.value||fallback}
-  function syncIdentity(){
-    const {label,title,subtitle,icon}=identityFields;
-    count(label,'#studio92-label-count',40);count(title,'#studio92-title-count',48);count(subtitle,'#studio92-subtitle-count',150);
-    const mini=q('#studio92-mini-hero');
-    if(mini){mini.dataset.align=checked('sub-title-align','left');mini.dataset.logo=checked('sub-logo-size','medium')}
-    const set=(id,val)=>{const el=q(id);if(el)el.textContent=val};
-    set('#studio92-mini-label',(label?.value||'Secure AmneziaWG portal').trim()||'Secure AmneziaWG portal');
-    set('#studio92-mini-title',(title?.value||'premium-user').trim()||'premium-user');
-    set('#studio92-mini-subtitle',(subtitle?.value||'Your account is ready.').trim()||'Your account is ready.');
-    const miniIcon=q('#studio92-mini-icon');if(miniIcon)miniIcon.className=icon?.value||'fas fa-bolt';
-    qa('[data-studio-icon]').forEach(btn=>btn.classList.toggle('active',btn.dataset.studioIcon===(icon?.value||'fas fa-bolt')));
-  }
-  for(const el of Object.values(identityFields))el?.addEventListener('input',syncIdentity);
-  qa('input[name="sub-title-align"],input[name="sub-logo-size"]').forEach(el=>el.addEventListener('change',syncIdentity));
-  qa('[data-studio-icon]').forEach(btn=>btn.addEventListener('click',()=>{
-    if(!identityFields.icon)return;
-    identityFields.icon.value=btn.dataset.studioIcon;
-    emit(identityFields.icon);emit(identityFields.icon,'change');syncIdentity();
-  }));
-  q('#studio92-copy-default')?.addEventListener('click',()=>{
-    if(identityFields.label)identityFields.label.value='Secure AmneziaWG portal';
-    if(identityFields.subtitle)identityFields.subtitle.value='Your account is ready. Install AmneziaWG, then scan QR or import a config.';
-    emit(identityFields.label);emit(identityFields.subtitle);syncIdentity();
-  });
-  q('#studio92-title-client')?.addEventListener('click',()=>{
-    if(identityFields.title){identityFields.title.value='';emit(identityFields.title);identityFields.title.focus()}syncIdentity();
-  });
-
-  const supportMeta={
-    telegram:['fab fa-telegram','Telegram'],whatsapp:['fab fa-whatsapp','WhatsApp'],phone:['fas fa-phone','Phone'],email:['fas fa-envelope','Email'],website:['fas fa-globe','Website'],instagram:['fab fa-instagram','Instagram']
-  };
-  function syncSupport(){
-    const preview=q('#studio92-support-preview-list');
-    const active=[];
-    for(const [key,[icon,label]] of Object.entries(supportMeta)){
-      const input=q('#sup-'+key);const card=q(`[data-support-channel="${key}"]`);const value=(input?.value||'').trim();
-      card?.classList.toggle('has-value',!!value);
-      const state=card?.querySelector('.studio92-channel-state');if(state)state.textContent=value?'Active':'Empty';
-      if(value)active.push({key,icon,label,value});
+  setTimeout(fixedClientUI, 0);
+  onTemplateStudioReady(() => {
+    const identityFields={
+      label:q('#portal-label'),title:q('#portal-title'),subtitle:q('#portal-subtitle'),icon:q('#portal-icon')
+    };
+    function count(el,id,max){const out=q(id);if(out)out.textContent=`${(el?.value||'').length}/${max}`}
+    function checked(name,fallback){return q(`input[name="${name}"]:checked`)?.value||fallback}
+    function syncIdentity(){
+      const {label,title,subtitle,icon}=identityFields;
+      count(label,'#studio92-label-count',40);count(title,'#studio92-title-count',48);count(subtitle,'#studio92-subtitle-count',150);
+      const mini=q('#studio92-mini-hero');
+      if(mini){mini.dataset.align=checked('sub-title-align','left');mini.dataset.logo=checked('sub-logo-size','medium')}
+      const set=(id,val)=>{const el=q(id);if(el)el.textContent=val};
+      set('#studio92-mini-label',(label?.value||'Secure AmneziaWG portal').trim()||'Secure AmneziaWG portal');
+      set('#studio92-mini-title',(title?.value||'premium-user').trim()||'premium-user');
+      set('#studio92-mini-subtitle',(subtitle?.value||'Your account is ready.').trim()||'Your account is ready.');
+      const miniIcon=q('#studio92-mini-icon');if(miniIcon)miniIcon.className=icon?.value||'fas fa-bolt';
+      qa('[data-studio-icon]').forEach(btn=>btn.classList.toggle('active',btn.dataset.studioIcon===(icon?.value||'fas fa-bolt')));
     }
-    const sum=q('#studio-support-summary');if(sum)sum.textContent=`${active.length} active`;
-    if(preview){
-      preview.innerHTML=active.length?active.map(x=>`<span class="studio92-support-preview-item"><i class="${x.icon}"></i><span><b>${x.label}</b><small>${String(x.value).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}</small></span></span>`).join(''):'<span class="studio92-support-empty"><i class="fas fa-eye-slash"></i>No support channels configured</span>';
-    }
-  }
-  for(const key of Object.keys(supportMeta))q('#sup-'+key)?.addEventListener('input',syncSupport);
-  qa('[data-clear-support]').forEach(btn=>btn.addEventListener('click',()=>{const el=q('#sup-'+btn.dataset.clearSupport);if(el){el.value='';emit(el);emit(el,'change');el.focus()}syncSupport()}));
+    for(const el of Object.values(identityFields))el?.addEventListener('input',syncIdentity);
+    qa('input[name="sub-title-align"],input[name="sub-logo-size"]').forEach(el=>el.addEventListener('change',syncIdentity));
+    qa('[data-studio-icon]').forEach(btn=>btn.addEventListener('click',()=>{
+      if(!identityFields.icon)return;
+      identityFields.icon.value=btn.dataset.studioIcon;
+      emit(identityFields.icon);emit(identityFields.icon,'change');syncIdentity();
+    }));
+    q('#studio92-copy-default')?.addEventListener('click',()=>{
+      if(identityFields.label)identityFields.label.value='Secure AmneziaWG portal';
+      if(identityFields.subtitle)identityFields.subtitle.value='Your account is ready. Install AmneziaWG, then scan QR or import a config.';
+      emit(identityFields.label);emit(identityFields.subtitle);syncIdentity();
+    });
+    q('#studio92-title-client')?.addEventListener('click',()=>{
+      if(identityFields.title){identityFields.title.value='';emit(identityFields.title);identityFields.title.focus()}syncIdentity();
+    });
 
-  const modal=q('#sub-settings-modal');
-  if(modal){
-    new MutationObserver(()=>{syncIdentity();syncSupport()}).observe(modal,{attributes:true,attributeFilter:['class','aria-hidden']});
-  }
-  document.addEventListener('change',e=>{
-    if(e.target.matches('input[name="sub-title-align"],input[name="sub-logo-size"],#portal-icon'))syncIdentity();
+    const supportMeta={
+      telegram:['fab fa-telegram','Telegram'],whatsapp:['fab fa-whatsapp','WhatsApp'],phone:['fas fa-phone','Phone'],email:['fas fa-envelope','Email'],website:['fas fa-globe','Website'],instagram:['fab fa-instagram','Instagram']
+    };
+    function syncSupport(){
+      const preview=q('#studio92-support-preview-list');
+      const active=[];
+      for(const [key,[icon,label]] of Object.entries(supportMeta)){
+        const input=q('#sup-'+key);const card=q(`[data-support-channel="${key}"]`);const value=(input?.value||'').trim();
+        card?.classList.toggle('has-value',!!value);
+        const state=card?.querySelector('.studio92-channel-state');if(state)state.textContent=value?'Active':'Empty';
+        if(value)active.push({key,icon,label,value});
+      }
+      const sum=q('#studio-support-summary');if(sum)sum.textContent=`${active.length} active`;
+      if(preview){
+        preview.innerHTML=active.length?active.map(x=>`<span class="studio92-support-preview-item"><i class="${x.icon}"></i><span><b>${x.label}</b><small>${String(x.value).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}</small></span></span>`).join(''):'<span class="studio92-support-empty"><i class="fas fa-eye-slash"></i>No support channels configured</span>';
+      }
+    }
+    for(const key of Object.keys(supportMeta))q('#sup-'+key)?.addEventListener('input',syncSupport);
+    qa('[data-clear-support]').forEach(btn=>btn.addEventListener('click',()=>{const el=q('#sup-'+btn.dataset.clearSupport);if(el){el.value='';emit(el);emit(el,'change');el.focus()}syncSupport()}));
+
+    const modal=q('#sub-settings-modal');
+    if(modal){
+      new MutationObserver(()=>{syncIdentity();syncSupport()}).observe(modal,{attributes:true,attributeFilter:['class','aria-hidden']});
+    }
+    document.addEventListener('change',e=>{
+      if(e.target.matches('input[name="sub-title-align"],input[name="sub-logo-size"],#portal-icon'))syncIdentity();
+    });
+    setTimeout(() => {syncIdentity();syncSupport();}, 0);
   });
-  setTimeout(()=>{fixedClientUI();syncIdentity();syncSupport()},0);
 })();
 
 
@@ -4072,16 +4141,6 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
   function init(){bindFixed();bindPreview();}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
   watch('#sub-modal',bindFixed);watch('#sub-settings-modal',()=>{bindPreview();refreshPreview()});
-})();
-
-(() => {
-  'use strict';
-  const q=(s,r=document)=>r.querySelector(s);
-  function markCompactSupport(){
-    const panel=q('#sub-settings-modal [data-studio8-panel="support"]');
-    if(panel) panel.classList.add('studio124-compact-support');
-  }
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',markCompactSupport); else markCompactSupport();
 })();
 
 (() => {

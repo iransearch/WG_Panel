@@ -2,8 +2,9 @@
   'use strict';
   document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-open-updates]').forEach(button => button.addEventListener('click', () => document.getElementById('sb2-update-open')?.click()));
-    document.getElementById('studio-calm-preset')?.addEventListener('click', () => {
-      const modal = document.getElementById('sub-settings-modal');
+    const modal = document.getElementById('sub-settings-modal');
+    modal?.addEventListener('click', event => {
+      if (!event.target.closest('#studio-calm-preset')) return;
       const values = {'portal-animation-choice':'off','sub-entrance-animation':'none','sub-hover-animation':'none','sub-surface':'solid','sub-density':'comfortable','sub-theme-default':'auto'};
       Object.entries(values).forEach(([name,value])=>{const field=modal.querySelector(`[name="${name}"][value="${value}"]`);if(field){field.checked=true;field.dispatchEvent(new Event('change',{bubbles:true}));}});
       const animation=modal.querySelector('#portal-animation');if(animation){animation.value='off';animation.dispatchEvent(new Event('change',{bubbles:true}));}

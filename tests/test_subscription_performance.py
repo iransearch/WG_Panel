@@ -1,5 +1,6 @@
 import os
 from base64 import b64encode
+from gzip import decompress
 from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -320,6 +321,24 @@ class SubscriptionPerformanceTests(unittest.TestCase):
         response = self.client.get('/login', base_url='https://localhost')
         self.assertIn('upgrade-insecure-requests', response.headers['Content-Security-Policy'])
         self.assertNotIn('block-all-mixed-content', response.headers['Content-Security-Policy'])
+
+    def test_subscription_studio_markup_is_served_separately(self):
+        db.session.add(AdminAccount(username='studio-test', password_hash='unused'))
+        db.session.commit()
+        with self.client.session_transaction() as session:
+            session['_user_id'] = '1'
+            session['_fresh'] = True
+        headers = {'Accept-Encoding': 'gzip'}
+        page = self.client.get('/subscriptions', headers=headers)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b'data-content-url="/static/subscription-studio.html"', page.data)
+        self.assertNotIn(b'id="studio-preview-frame"', page.data)
+        self.assertNotIn('Content-Encoding', page.headers)
+
+        with self.client.get('/static/subscription-studio.html', headers=headers) as studio:
+            self.assertEqual(studio.status_code, 200)
+            self.assertEqual(studio.headers['Content-Encoding'], 'gzip')
+            self.assertIn(b'id="studio-preview-frame"', decompress(studio.data))
 
     def test_config_download_checks_live_quota_before_next_sweep(self):
         self.add_clients(1)

@@ -504,7 +504,7 @@ def _log_request(resp):
 
 app.config.update(
     COMPRESS_REGISTER=False,
-    COMPRESS_MIMETYPES=["text/css", "text/javascript", "application/javascript"],
+    COMPRESS_MIMETYPES=["text/css", "text/javascript", "application/javascript", "text/html"],
     COMPRESS_ALGORITHM=["gzip"],
     COMPRESS_ALGORITHM_STREAMING=["gzip"],
     COMPRESS_LEVEL=4,
