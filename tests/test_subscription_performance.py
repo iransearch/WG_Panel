@@ -1,9 +1,11 @@
 import os
+from base64 import b64encode
 from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from sqlalchemy import event, inspect
@@ -170,6 +172,115 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(self.panel._available_ips(iface, limit=2), [
                 f'{ip_address(int(allocated) + 1)}/14', f'{ip_address(int(allocated) + 2)}/14',
             ])
+
+    def add_irspeedy_interfaces(self):
+        interfaces = []
+        for index, name in enumerate(('wg0', 'wg1')):
+            conf = self.lock.with_name(f'{name}.conf')
+            conf.write_text(f'[Interface]\nAddress = 10.60.{index}.1/29\nJc = 4\n')
+            interfaces.append(InterfaceConfig(
+                name=name, path=str(conf), address=f'10.60.{index}.1/24',
+                listen_port=51820 + index, private_key='fixture',
+                public_key=b64encode(bytes([40 + index]) * 32).decode(),
+                endpoint_host=f'{name}.example.test', endpoint_port=51820 + index,
+            ))
+        db.session.add_all(interfaces)
+        db.session.commit()
+        return interfaces
+
+    def test_irspeedy_provisions_two_peers_with_one_subscription_and_feed(self):
+        wg0, wg1 = self.add_irspeedy_interfaces()
+        headers = {**self.headers, 'Idempotency-Key': 'a' * 64}
+        data = {
+            'name': 'Dual interface', 'data_limit_value': 10,
+            'targets': [{'scope': 'local', 'iface': 'wg1'}, {'scope': 'local', 'iface_id': wg0.id}],
+        }
+        keys = [b64encode(bytes([byte]) * 32) for byte in range(1, 5)]
+        with (
+            patch.object(self.panel.subprocess, 'check_output', side_effect=keys),
+            patch.object(self.panel, '_wg_allowed_ips', return_value=set()),
+            patch.object(self.panel, '_check_iface_up'),
+            patch.object(self.panel, '_wg_enable') as enable,
+            patch.object(self.panel, '_derive_wg_public_key', return_value=''),
+        ):
+            capability = self.client.get('/api/irspeedy/capabilities?iface=wg1', headers=headers)
+            self.assertEqual(capability.get_json()['max_local_targets'], 2)
+            response = self.client.post('/api/irspeedy/subscriptions', headers=headers, json=data)
+            self.assertEqual(response.status_code, 201, response.get_json())
+            subscription = response.get_json()['subscription']
+            self.assertEqual(subscription['interface_ids'], [wg1.id, wg0.id])
+            self.assertEqual(Subscription.query.count(), 1)
+            links = SubscriptionPeer.query.order_by(SubscriptionPeer.sort_order).all()
+            self.assertEqual([(link.owned, link.peer.name, link.peer.address) for link in links], [
+                (True, 'Dual interface-1', '10.60.1.2/29'),
+                (True, 'Dual interface-2', '10.60.0.2/29'),
+            ])
+            self.assertEqual(len({link.peer.public_key for link in links}), 2)
+            self.assertTrue(all(link.peer.data_limit_value == 10 for link in links))
+            for link in links:
+                self.assertIn(link.peer.public_key, Path(link.peer.iface.path).read_text())
+
+            feed = self.client.get(urlsplit(subscription['feed_url']).path)
+            self.assertEqual(feed.status_code, 200)
+            self.assertEqual([urlsplit(uri).netloc for uri in feed.get_data(as_text=True).splitlines()], [
+                'wg1.example.test:51821', 'wg0.example.test:51820',
+            ])
+            replay = self.client.post('/api/irspeedy/subscriptions', headers=headers, json=data)
+            self.assertEqual(replay.status_code, 200)
+            self.assertEqual(replay.get_json()['subscription'], subscription)
+            self.assertEqual(enable.call_count, 2)
+
+        for targets, status, error in [
+            ([{'scope': 'local', 'iface': 'wg0'}, {'scope': 'local', 'iface_id': wg0.id}],
+             400, 'duplicate_local_interface'),
+            ([{'scope': 'local', 'iface': 'wg0'}, {'scope': 'local', 'iface': 'missing'}],
+             404, 'local_interface_not_found'),
+            ([{'scope': 'local', 'iface': 'wg0'}, {'scope': 'node', 'iface': 'wg1'}],
+             400, 'local_interface_required'),
+        ]:
+            with self.subTest(targets=targets), patch.object(self.panel, 'install_local_peer') as install:
+                invalid = self.client.post(
+                    '/api/irspeedy/subscriptions', headers={**self.headers, 'Idempotency-Key': 'b' * 64},
+                    json={'name': 'Invalid interfaces', 'targets': targets},
+                )
+                self.assertEqual(invalid.status_code, status)
+                self.assertEqual(invalid.get_json()['error'], error)
+                install.assert_not_called()
+
+    def test_irspeedy_removes_both_peers_when_second_install_fails(self):
+        interfaces = self.add_irspeedy_interfaces()
+        files = {Path(iface.path): Path(iface.path).read_text() for iface in interfaces}
+        install = self.panel.install_local_peer
+
+        def fail_after_writing_second_peer(peer):
+            install(peer)
+            if peer.iface.name == 'wg1':
+                raise RuntimeError('Injected failure after writing the second peer')
+
+        with (
+            patch.object(self.panel.subprocess, 'check_output', side_effect=[b'priv-0', b'pub-0', b'priv-1', b'pub-1']),
+            patch.object(self.panel, '_wg_allowed_ips', return_value=set()),
+            patch.object(self.panel, '_check_iface_up'),
+            patch.object(self.panel, '_iface_up', return_value=True),
+            patch.object(self.panel, '_wg_peer_keys', return_value=set()),
+            patch.object(self.panel, '_wg_enable'),
+            patch.object(self.panel, '_wg_disable') as disable,
+            patch.object(self.panel, 'install_local_peer', side_effect=fail_after_writing_second_peer),
+        ):
+            response = self.client.post(
+                '/api/irspeedy/subscriptions', headers={**self.headers, 'Idempotency-Key': 'c' * 64},
+                json={'name': 'Dual interface', 'targets': [
+                    {'scope': 'local', 'iface': 'wg0'}, {'scope': 'local', 'iface': 'wg1'},
+                ]},
+            )
+            self.assertEqual(response.status_code, 500)
+            self.assertTrue(response.get_json()['cleanup_complete'])
+            self.assertEqual([call.args[0].public_key for call in disable.call_args_list], ['pub-1', 'pub-0'])
+
+        self.assertEqual({file: file.read_text() for file in files}, files)
+        self.assertEqual(Subscription.query.count(), 0)
+        self.assertEqual(SubscriptionPeer.query.count(), 0)
+        self.assertEqual(Peer.query.count(), 0)
 
     def test_allocator_observes_live_and_saved_reservations(self):
         conf = self.lock.with_name('alloc-awg.conf')

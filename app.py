@@ -11923,7 +11923,7 @@ def _iface_is_node(iface) -> bool:
     return getattr(iface, 'node_id', None) is not None or (':' in name)
 
 
-def interface_ip_interface(iface):
+def interface_ip_interface(iface, *, sync_address=True):
 
     if not iface:
         return None
@@ -11939,7 +11939,7 @@ def interface_ip_interface(iface):
     if not cidr:
         return None
 
-    if (not _iface_is_node(iface)) and addr_field and getattr(iface, 'address', None) != addr_field:
+    if sync_address and not _iface_is_node(iface) and addr_field and getattr(iface, 'address', None) != addr_field:
         try:
             iface.address = addr_field
             db.session.add(iface)
@@ -12054,9 +12054,9 @@ def _validate_requested_host(ip_iface, requested):
 
 
 def allocate_peer_address(iface, requested=None, *, exclude_peer_id=None,
-                          exclude_address=None, extra_reserved=()):
+                          exclude_address=None, extra_reserved=(), sync_address=True):
 
-    ip_iface = interface_ip_interface(iface)
+    ip_iface = interface_ip_interface(iface, sync_address=sync_address)
     if ip_iface is None:
         raise AddressInvalid(
             f'Interface {getattr(iface, "name", "?")} has no usable Address= setting.'
@@ -12332,7 +12332,7 @@ def ensure_node_mirror_iface(node, iface_name, remote_iface=None, *, mtu=None, d
     return iface
 
 
-def resolve_requested_peer_address(iface, value, *, allow_legacy_interface_address=False):
+def resolve_requested_peer_address(iface, value, *, allow_legacy_interface_address=False, sync_address=True):
 
     text = str(value or '').strip()
     if not text:
@@ -12343,7 +12343,7 @@ def resolve_requested_peer_address(iface, value, *, allow_legacy_interface_addre
     except ValueError:
         raise AddressInvalid(f'{text} is not a valid IP address.')
 
-    ip_iface = interface_ip_interface(iface)
+    ip_iface = interface_ip_interface(iface, sync_address=sync_address)
     if (
         allow_legacy_interface_address
         and ip_iface is not None
@@ -12354,15 +12354,16 @@ def resolve_requested_peer_address(iface, value, *, allow_legacy_interface_addre
     return text
 
 
-def requested_peer_address_from_target(iface, target):
+def requested_peer_address_from_target(iface, target, *, sync_address=True):
     explicit = str((target or {}).get('peer_address') or '').strip()
     if explicit:
-        return resolve_requested_peer_address(iface, explicit)
+        return resolve_requested_peer_address(iface, explicit, sync_address=sync_address)
 
     return resolve_requested_peer_address(
         iface,
         (target or {}).get('address'),
         allow_legacy_interface_address=True,
+        sync_address=sync_address,
     )
 
 
@@ -12663,19 +12664,21 @@ def _remove_peer_quiet(peer: Peer):
 
 def _rollback_local_created_peer(peer: Peer):
     errors = []
-    dev = iface_devname(peer.iface) if getattr(peer, 'iface', None) else ''
-    if dev and _iface_up(dev):
-        try:
-            _wg_disable(peer)
-            if peer.public_key in _wg_peer_keys(dev):
-                raise RuntimeError(f'{peer.public_key} is still present in {dev}.')
-        except Exception as exc:
-            errors.append(f'runtime: {exc}')
+    iface = peer.iface
+    with interface_allocation_lock(iface):
+        dev = iface_devname(iface) if iface else ''
+        if dev and _iface_up(dev):
+            try:
+                _wg_disable(peer)
+                if peer.public_key in _wg_peer_keys(dev):
+                    raise RuntimeError(f'{peer.public_key} is still present in {dev}.')
+            except Exception as exc:
+                errors.append(f'runtime: {exc}')
 
-    try:
-        _remove_peer(peer)
-    except Exception as exc:
-        errors.append(f'config: {exc}')
+        try:
+            _remove_peer(peer)
+        except Exception as exc:
+            errors.append(f'config: {exc}')
 
     if errors:
         raise RuntimeError('; '.join(errors))
@@ -27188,8 +27191,9 @@ def _create_subscription_peer(target, payload, compensation=None):
         raise ValueError('iface_id is required for local target')
 
     with interface_allocation_lock(iface):
-        requested = requested_peer_address_from_target(iface, target)
-        addr = allocate_peer_address(iface, requested=requested)
+        # Address discovery must not commit before every subscription peer is installed.
+        requested = requested_peer_address_from_target(iface, target, sync_address=False)
+        addr = allocate_peer_address(iface, requested=requested, sync_address=False)
 
         peer = Peer(
             iface_id=iface.id,
@@ -27210,9 +27214,9 @@ def _create_subscription_peer(target, payload, compensation=None):
         )
         db.session.add(peer)
         db.session.flush()
-        install_local_peer(peer)
         if compensation is not None:
             compensation.register_local(peer)
+        install_local_peer(peer)
 
     return peer
 
@@ -27225,13 +27229,13 @@ def _attach_subscription_target(sub, target, data, idx=0, total=1, compensation=
         if existing:
             link = existing
         else:
-            link = SubscriptionPeer(subscription_id=sub.id, peer_id=peer.id, owned=False)
+            link = SubscriptionPeer(subscription=sub, peer=peer, owned=False)
             db.session.add(link)
             db.session.flush()
     else:
         payload = _peer_payload_subscription(sub, target, data, idx=idx, total=total)
         peer = _create_subscription_peer(target, payload, compensation=compensation)
-        link = SubscriptionPeer(subscription_id=sub.id, peer_id=peer.id, owned=True)
+        link = SubscriptionPeer(subscription=sub, peer=peer, owned=True)
         db.session.add(link)
         db.session.flush()
     link.sort_order = idx
@@ -28566,20 +28570,26 @@ def _irspeedy_local_interface(name, legacy_id):
     return iface if iface is not None and not _iface_is_node(iface) else None
 
 
+IRSPEEDY_MAX_LOCAL_TARGETS = 2
+
+
 @app.get('/api/irspeedy/capabilities')
 @require_api_key_or_login
 def api_irspeedy_capabilities():
     iface = _irspeedy_local_interface(request.args.get('iface'), request.args.get('iface_id', type=int))
     if iface is None:
         return jsonify(error='local_interface_not_found'), 404
-    return jsonify(version=1, iface=iface.name, iface_id=iface.id, scope='local')
+    return jsonify(version=1, iface=iface.name, iface_id=iface.id, scope='local',
+                   max_local_targets=IRSPEEDY_MAX_LOCAL_TARGETS)
 
 
 def _irspeedy_subscription_response(sub, status):
+    links = sorted(sub.links, key=lambda link: (link.sort_order or 0, link.id))
     return jsonify(
         ok=True,
         subscription={
             'id': sub.id,
+            'interface_ids': [link.peer.iface_id for link in links if link.peer],
             'feed_url': url_for('irspeedy_subscription_links', token=sub.token, _external=True),
         },
     ), status
@@ -28595,21 +28605,25 @@ def api_irspeedy_subscriptions():
     if not isinstance(data, dict):
         return jsonify(error='invalid_request'), 400
     targets = data.get('targets')
-    if (not isinstance(targets, list) or len(targets) != 1 or not isinstance(targets[0], dict)
-            or targets[0].get('scope') != 'local' or targets[0].get('peer_id')):
+    if (not isinstance(targets, list) or not 1 <= len(targets) <= IRSPEEDY_MAX_LOCAL_TARGETS
+            or any(not isinstance(target, dict) or target.get('scope') != 'local'
+                   or target.get('peer_id') for target in targets)):
         return jsonify(error='local_interface_required'), 400
 
     existing = Subscription.query.filter_by(token=provision_token).first()
     if existing:
         return _irspeedy_subscription_response(existing, 200)
 
-    target = targets[0]
-    iface = _irspeedy_local_interface(target.get('iface'), target.get('iface_id'))
-    if iface is None:
-        return jsonify(error='local_interface_not_found'), 404
-
-    # Use the resolved local record even if a client supplied both fields.
-    target['iface_id'] = iface.id
+    iface_ids = set()
+    for target in targets:
+        iface = _irspeedy_local_interface(target.get('iface'), target.get('iface_id'))
+        if iface is None:
+            return jsonify(error='local_interface_not_found'), 404
+        if iface.id in iface_ids:
+            return jsonify(error='duplicate_local_interface'), 400
+        iface_ids.add(iface.id)
+        # Use the resolved local record even if a client supplied both fields.
+        target['iface_id'] = iface.id
     return _create_subscription(data, provision_token)
 
 
