@@ -3461,27 +3461,36 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
     stage.style.overflow=previewFit==='page'?'hidden':'auto';
     stage.scrollTop=0;stage.scrollLeft=0;
   }
+  const settingsModal=q('#sub-settings-modal');
+  const previewIsOpen=()=>settingsModal?.getAttribute('aria-hidden')==='false';
+  const previewEndpoint=new URL('/api/subscriptions/template-preview',window.location.origin);
+  function setPreviewDocument(frame,html){
+    // A srcdoc iframe otherwise inherits the parent document's base URL.
+    const base=`<base href="${esc(window.location.origin)}/">`;
+    frame.srcdoc=html.replace(/<head(?:\s[^>]*)?>/i,head=>head+base);
+  }
   async function refreshPreview(){
     clearTimeout(previewTimer);
+    if(!previewIsOpen())return;
     const s=currentSettings();updateRangeLabels();updateSummaries(s);
     const frame=q('#studio-preview-frame');if(!frame)return;
     const token=++frameToken;
-    const applyFrame=()=>{if(token!==frameToken)return;frame.style.display='block';frame.style.visibility='visible';frame.style.opacity='1';applyPreviewSettingsToFrame(s,{replay:true});requestAnimationFrame(()=>requestAnimationFrame(fitFrame));setTimeout(()=>{applyPreviewSettingsToFrame(currentSettings());fitFrame()},160);setTimeout(fitFrame,480);setTimeout(fitFrame,900)};
+    const applyFrame=()=>{if(token!==frameToken||!previewIsOpen())return;frame.style.display='block';frame.style.visibility='visible';frame.style.opacity='1';applyPreviewSettingsToFrame(s,{replay:true});requestAnimationFrame(()=>requestAnimationFrame(fitFrame));setTimeout(()=>{applyPreviewSettingsToFrame(currentSettings());fitFrame()},160);setTimeout(fitFrame,480);setTimeout(fitFrame,900)};
     frame.onload=applyFrame;
     try{
-      const r=await fetch('/api/subscriptions/template-preview',{method:'POST',headers:csrfHeaders(true),credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{...s,theme_default:resolvedTheme(s)},subscription_id:SUB_STUDIO_TARGET_ID||null})});
+      const r=await fetch(previewEndpoint,{method:'POST',headers:csrfHeaders(true),credentials:'same-origin',cache:'no-store',body:JSON.stringify({settings:{...s,theme_default:resolvedTheme(s)},subscription_id:SUB_STUDIO_TARGET_ID||null})});
       if(!r.ok)throw new Error(`Preview HTTP ${r.status}`);
       const html=await r.text();
-      if(token!==frameToken)return;
-      frame.srcdoc=html;
+      if(token!==frameToken||!previewIsOpen())return;
+      setPreviewDocument(frame,html);
     }catch(err){
       console.warn('Server-rendered template preview unavailable; using local preview fallback.',err);
-      if(token!==frameToken)return;
-      frame.srcdoc=previewDoc(s);
+      if(token!==frameToken||!previewIsOpen())return;
+      setPreviewDocument(frame,previewDoc(s));
     }
   }
 
-  function schedulePreview(now=false){clearTimeout(previewTimer);previewTimer=setTimeout(refreshPreview,now?0:90)}
+  function schedulePreview(now=false){clearTimeout(previewTimer);if(previewIsOpen())previewTimer=setTimeout(refreshPreview,now?0:90)}
   q('#sub-settings-modal')?.addEventListener('input',()=>{const s=currentSettings();updateRangeLabels();updateSummaries(s);applyPreviewSettingsToFrame(s);schedulePreview()});q('#sub-settings-modal')?.addEventListener('change',e=>{if(e.target.name==='portal-animation-choice')setValue('portal-animation',e.target.value);const s=currentSettings();updateStudioTokenPreview(s);applyPreviewSettingsToFrame(s,{replay:e.target.name==='sub-entrance-animation'});schedulePreview()});
   qa('[data-preview-theme]').forEach(btn=>btn.addEventListener('click',()=>{previewTheme=btn.dataset.previewTheme;qa('[data-preview-theme]').forEach(b=>b.classList.toggle('active',b===btn));schedulePreview(true)}));
   qa('[data-preview-device]').forEach(btn=>btn.addEventListener('click',()=>{previewDevice=btn.dataset.previewDevice==='mobile'?'mobile':'desktop';q('.studio8-frame-stage')?.setAttribute('data-preview-device',previewDevice);qa('[data-preview-device]').forEach(b=>b.classList.toggle('active',b===btn));applyPreviewSettingsToFrame(currentSettings(),{replay:true});schedulePreview(true)}));
@@ -3489,8 +3498,17 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape' && OPEN_SUBSCRIPTI
   q('#studio-preview-motion-toggle')?.addEventListener('click',()=>{previewPaused=!previewPaused;applyPreviewPlayback()});
   new ResizeObserver(()=>fitFrame()).observe(q('.studio8-frame-stage'));
   new MutationObserver(()=>{if(previewTheme==='auto')schedulePreview()}).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-  const settingsModal=q('#sub-settings-modal');if(settingsModal)new MutationObserver(()=>{if(settingsModal.getAttribute('aria-hidden')==='false'){activateTab('layout');setTimeout(()=>{applySettings(SUB_SETTINGS||{});schedulePreview(true);setTimeout(fitFrame,220)},0)}}).observe(settingsModal,{attributes:true,attributeFilter:['aria-hidden']});
-  activateTab('layout');updateRangeLabels();updateStudioTokenPreview();schedulePreview(true);
+  if(settingsModal)new MutationObserver(()=>{
+    if(previewIsOpen()){
+      activateTab('layout');
+      setTimeout(()=>{applySettings(SUB_SETTINGS||{});schedulePreview(true);setTimeout(fitFrame,220)},0);
+    }else{
+      clearTimeout(previewTimer);
+      frameToken++;
+    }
+  }).observe(settingsModal,{attributes:true,attributeFilter:['aria-hidden']});
+  activateTab('layout');updateRangeLabels();updateStudioTokenPreview();
+
 })();
 
 

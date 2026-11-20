@@ -88,10 +88,6 @@
       (() => { const root = document.documentElement; const configured = root.dataset.defaultTheme || 'auto'; const preview = root.dataset.preview === 'true'; let theme; if (preview) { theme = configured === 'light' ? 'light' : configured === 'dark' ? 'dark' : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'); } else { try { const saved = localStorage.getItem('sub-theme'); theme = saved === 'light' || saved === 'dark' ? saved : (configured === 'light' || configured === 'dark' ? configured : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')); } catch (_) { theme = configured === 'light' ? 'light' : 'dark'; } } root.dataset.theme = theme; root.style.colorScheme = theme; const meta = document.getElementById('browser-theme-color'); if (meta) meta.content = theme === 'light' ? '#eef5fb' : '#07111f'; })();
     </script>
     <link rel="stylesheet" href="{{ url_for('static', filename='vendor/fa/css/all.min.css') }}">
-    <link rel="preload" href="{{ url_for('static', filename='fonts/Poppins-Regular.woff2') }}" as="font"
-      type="font/woff2" crossorigin>
-    <link rel="preload" href="{{ url_for('static', filename='fonts/Poppins-SemiBold.woff2') }}" as="font"
-      type="font/woff2" crossorigin>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/subscription_public.css') }}">
     <style>
       :root {
@@ -363,7 +359,15 @@
       </section>
     </div>
     <div class="toast" id="toast">Copied</div>
-    <script>let DATA = {{ data| tojson }}; const PREVIEW_MODE = {{ 'true' if preview_mode|default (false) else 'false' }}; const TOKEN = {{ sub.token| tojson }}; const CONFIG_URL = {{ url_for('subscription_public_config', token = sub.token, _external = True) | tojson }}; const API_URL = {{ url_for('subscription_public_api', token = sub.token, _external = True) | tojson }}; const PUBLIC_SETTINGS = {{ ps| tojson }};</script>
+    {% set is_preview = preview_mode|default(false) %}
+    <script>
+      let DATA = {{ data|tojson }};
+      const PREVIEW_MODE = {{ is_preview|tojson }};
+      const TOKEN = {{ sub.token|tojson }};
+      const CONFIG_URL = new URL({{ url_for('subscription_public_config', token=sub.token, _external=not is_preview)|tojson }}, document.baseURI).href;
+      const API_URL = new URL({{ url_for('subscription_public_api', token=sub.token, _external=not is_preview)|tojson }}, document.baseURI).href;
+      const PUBLIC_SETTINGS = {{ ps|tojson }};
+    </script>
     <script defer src="{{ url_for('static', filename='js/subscription_public.js') }}"></script>
   </body>
 
