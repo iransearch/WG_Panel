@@ -1426,6 +1426,10 @@ def _env_text(values: Dict[str, str]) -> str:
 
     return "\n".join(lines) + "\n"
 
+def _hide_database_url(env_text: str) -> str:
+    return re.sub(r"^DATABASE_URL=(?!sqlite:).*$", "DATABASE_URL=[hidden]", env_text, flags=re.M)
+
+
 def env_setup(root: Path):
     env_path = root / ".env"
     existing = parse_env(readtext(env_path))
@@ -1466,7 +1470,7 @@ def env_setup(root: Path):
     vals["FLASK_SECRET_KEY"] = ask("FLASK_SECRET_KEY", default=vals["FLASK_SECRET_KEY"], show_default=True)
     vals["FERNET_KEY"] = ask("FERNET_KEY", default=vals["FERNET_KEY"], show_default=True)
     vals["API_KEY"] = ask("API_KEY", default=vals["API_KEY"], show_default=True)
-    vals["DATABASE_URL"] = ask("DATABASE_URL", default=vals["DATABASE_URL"], show_default=True)
+    vals["DATABASE_URL"] = ask("DATABASE_URL", default=vals["DATABASE_URL"], show_default=False)
     vals["LOG_LEVEL"] = ask("LOG_LEVEL", default=vals["LOG_LEVEL"], show_default=True).upper()
     vals["SECURE_COOKIES"] = ask("SECURE_COOKIES", default=vals["SECURE_COOKIES"], show_default=True)
     vals["AMNEZIAWG_CONF_PATH"] = ask("AMNEZIAWG_CONF_PATH", default=vals["AMNEZIAWG_CONF_PATH"], show_default=True)
@@ -1482,7 +1486,7 @@ def env_setup(root: Path):
 
     clear()
     header("Preview .env", "Review before saving")
-    print(box_text(".env Preview", c(env_text.rstrip("\n"), BR_WHT), border_color=BR_CYN))
+    print(box_text(".env Preview", c(_hide_database_url(env_text).rstrip("\n"), BR_WHT), border_color=BR_CYN))
 
     if confirm("Save .env now?", default_yes=True):
         _write(env_path, env_text)
@@ -2428,7 +2432,7 @@ def edit_env(root: Path):
     while True:
         clear()
         header("Edit .env", _paths(str(env_path)))
-        print(box_text("Live Preview", c(preview().rstrip("\n"), BR_WHT), border_color=BR_CYN))
+        print(box_text("Live Preview", c(_hide_database_url(preview()).rstrip("\n"), BR_WHT), border_color=BR_CYN))
 
         items = [
             c("Choose a field:", BR_WHT),
@@ -2493,7 +2497,7 @@ def edit_env(root: Path):
         }
         if ch in mapping:
             k = mapping[ch]
-            values[k] = ask(f"Set {k}", default=values.get(k, ""), show_default=True)
+            values[k] = ask(f"Set {k}", default=values.get(k, ""), show_default=k != "DATABASE_URL")
         else:
             warn("Invalid option.")
             time.sleep(0.25)
@@ -2646,6 +2650,47 @@ def preclone():
         print(box("Notes", notes, border_color=BR_YEL))
         pause()
 
+def postgresql_migration_option(root: Path):
+    if not isitroot() or not _cmd("systemctl"):
+        err("PostgreSQL migration requires root and a systemd installation.")
+        pause()
+        return
+    if _uses_postgresql(root):
+        info("This project is already configured for PostgreSQL.")
+        pause()
+        return
+    vpy = root / "venv" / "bin" / "python"
+    if not vpy.is_file() or not (root / ".env").is_file():
+        err("An existing panel installation with .env and venv is required.")
+        pause()
+        return
+
+    header("Database migration", "SQLite to local PostgreSQL")
+    info("The panel and active Telegram service pause during the copy. Existing VPN services keep running.")
+    info("The source database and a private backup will be kept.")
+    if not confirm("Migrate the installed panel to PostgreSQL?", default_yes=False):
+        return
+    if not _cmd("pg_isready") or not _cmd("pg_dump"):
+        if not _debian() or _apt_install(["postgresql", "postgresql-client"]) != 0:
+            err("Install PostgreSQL server and client tools first.")
+            pause()
+            return
+    if subprocess.run(
+        ["pg_isready", "-q", "-h", "/var/run/postgresql", "-p", "5432"],
+    ).returncode != 0:
+        err("Start the local PostgreSQL cluster on port 5432 first.")
+        pause()
+        return
+    if subprocess.run([str(vpy), "-c", "import psycopg"], stderr=subprocess.DEVNULL).returncode != 0:
+        if not _refresh_project_requirements(root):
+            pause()
+            return
+    result = subprocess.run([str(vpy), "-m", "panel_core.migrate_postgresql"], cwd=root)
+    if result.returncode:
+        err("Migration did not complete. Review the status and backup path above.")
+    pause()
+
+
 def install_menu():
     while True:
         root = get_project()  
@@ -2683,6 +2728,9 @@ def install_menu():
             c(" 12) PANEL service: create/restart + verify", BR_YEL),
             c(" 13) TELEGRAM service: create/restart + verify", BR_YEL),
             "",
+            c("DATABASE", BR_CYN),
+            c(" 14) Migrate SQLite to PostgreSQL", BR_CYN),
+            "",
             c("  0) Back", DIM),
         ]
         print(box("Install Menu", items, border_color=BR_YEL))
@@ -2714,6 +2762,8 @@ def install_menu():
             _service_option(root)
         elif ch == "13":
             telegram_option(root)
+        elif ch == "14":
+            postgresql_migration_option(root)
         elif ch == "0":
             return
         else:
@@ -2942,6 +2992,8 @@ def _panel_urls(root: Path) -> dict:
     }
 
 def _admin_usernames(root: Path) -> list[str]:
+    if _uses_postgresql(root):
+        return _list_usernames(root)
 
     db = root / "instance" / "wg_panel.db"
     if not db.exists():
@@ -3096,7 +3148,26 @@ def _admin_table(cur) -> str | None:
     return None
 
 
+def _uses_postgresql(root: Path) -> bool:
+    value = _read_env(root / ".env").get("DATABASE_URL", "").strip("'\"")
+    return bool(re.match(r"^postgres(?:ql)?(?:\+[^:]+)?://", value))
+
+
+def _postgresql_admin(root: Path, *args, password=None):
+    python = root / "venv" / "bin" / "python"
+    return subprocess.run(
+        [str(python), "-m", "panel_core.database_admin", *args], cwd=root,
+        input=password, text=True, capture_output=True, timeout=30,
+    )
+
+
 def _list_usernames(root: Path) -> list[str]:
+    if _uses_postgresql(root):
+        try:
+            result = _postgresql_admin(root, "list")
+            return json.loads(result.stdout) if result.returncode == 0 else []
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return []
     db = root / "instance" / "wg_panel.db"
     if not db.exists():
         return []
@@ -3121,14 +3192,15 @@ def _list_usernames(root: Path) -> list[str]:
 def reset_password(root: Path):
 
     db = root / "instance" / "wg_panel.db"
-    if not db.exists():
+    postgresql = _uses_postgresql(root)
+    if not postgresql and not db.exists():
         err(f"Database not found: {_paths(str(db))}")
         warn("Start the panel once to initialize the DB, or verify DATABASE_URL points to this file.")
         pause()
         return
 
     clear()
-    header("Reset Admin Password", _paths(str(db)))
+    header("Reset Admin Password", "PostgreSQL" if postgresql else _paths(str(db)))
 
     admins = _list_usernames(root)
 
@@ -3154,6 +3226,18 @@ def reset_password(root: Path):
 
     if not p1 or p1 != p2:
         err("Password empty or mismatch.")
+        pause()
+        return
+
+    if postgresql:
+        try:
+            result = _postgresql_admin(root, "reset", username, password=p1)
+            if result.returncode:
+                err(result.stderr.strip() or "Could not update the PostgreSQL account.")
+            else:
+                ok(f"Password reset for: {c(username, BR_WHT)}")
+        except (OSError, subprocess.SubprocessError):
+            err("Could not run the panel virtual environment.")
         pause()
         return
 

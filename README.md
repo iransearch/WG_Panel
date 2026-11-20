@@ -459,3 +459,24 @@ node
 ---------------------------------------------------------------
    </details>
 </div>
+
+## PostgreSQL on an existing installation
+
+SQLite remains the default. To migrate an existing Debian/Ubuntu systemd installation, update the panel code and restart the panel on SQLite first, then run the panel installer as root and choose **Install / Setup → 14) Migrate SQLite to PostgreSQL**.
+
+The option provisions a dedicated database and role on the local PostgreSQL cluster on port `5432`. It installs the server and client packages if the client tools are missing. If a PostgreSQL client is already present, make sure the local cluster is running before starting the migration.
+
+The installer pauses the web panel and, if running, the Telegram bot. It copies a consistent SQLite snapshot in a PostgreSQL transaction, verifies the copied rows and primary key sequences, updates `.env`, then checks the panel's login page and restarts the bot if it was active. The VPN interfaces continue running. If copying or panel startup fails, the migration restores the previous database configuration and attempts to restart the previously active services. If only the bot fails after the panel has started serving, PostgreSQL stays active.
+
+The original SQLite file and the private `instance/migration-sqlite-*/` directory are retained. That directory contains the SQLite snapshot and the pre- and post-migration environment files. If a hard interruption leaves the services stopped before cutover completes, restore `sqlite.env` from that directory to the project's `.env` with mode `0600` and start the previously active services. After the PostgreSQL panel has received live writes, switching back to the old SQLite snapshot will omit those writes.
+
+For a fresh installation, provision an empty PostgreSQL database owned by a dedicated role and set `DATABASE_URL` in `.env` to `postgresql+psycopg://USER:PASSWORD@127.0.0.1:5432/DBNAME` before starting the panel. URL-encode reserved characters in credentials. Install `postgresql-client` for panel backups. Use a `pg_dump` client compatible with the PostgreSQL server version.
+
+Database and full backups created by a PostgreSQL panel contain `db/wg_panel.pg.dump`. To restore, extract that member from a trusted ZIP and use `pg_restore` into a **new empty** PostgreSQL database owned by the intended panel role. For example, with `DBUSER` and `DBNAME` set to the restore role and new database:
+
+```sh
+pg_restore --exit-on-error --single-transaction --no-owner --no-acl \
+  --host=127.0.0.1 --username="$DBUSER" --dbname="$DBNAME" --password wg_panel.pg.dump
+```
+
+Then point `.env` to the restored database and restart the panel. For a full backup, use **Settings-only** in the web panel to recover settings and AmneziaWG files as needed. Restore of PostgreSQL database contents is performed offline with `pg_restore`.

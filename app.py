@@ -22,9 +22,9 @@ from flask_login import (
 from dotenv import load_dotenv
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
-DB_PATH      = os.path.join(INSTANCE_DIR, "wg_panel.db")
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 from config import Config
+from panel_core.database import POSTGRES_BACKUP, bundle_database, snapshot_sqlite
 from agent.awg_config import new_interface_lines, parameter_lines, read_parameters
 import time as _geo_time
 from urllib.parse import urlparse as _geo_urlparse
@@ -138,7 +138,7 @@ def _admin_columns():
     if 'recovery_codes' not in cols:
         to_add.append(("recovery_codes", "TEXT"))
     if 'twofa_enabled' not in cols:
-        to_add.append(("twofa_enabled", "INTEGER DEFAULT 0"))
+        to_add.append(("twofa_enabled", "BOOLEAN DEFAULT FALSE"))
     if 'last_totp_counter' not in cols:
         to_add.append(("last_totp_counter", "INTEGER DEFAULT 0"))
 
@@ -251,6 +251,7 @@ def _peer_schema():
         return
 
     statements = []
+    timestamp_type = 'TIMESTAMP' if db.engine.dialect.name == 'postgresql' else 'DATETIME'
 
     peer_cols = {c['name'] for c in insp.get_columns('peer')}
     if 'address_host' not in peer_cols:
@@ -258,7 +259,7 @@ def _peer_schema():
     if 'peer_endpoint' not in peer_cols:
         statements.append('ALTER TABLE peer ADD COLUMN peer_endpoint VARCHAR(128)')
     if 'timer_started_at' not in peer_cols:
-        statements.append('ALTER TABLE peer ADD COLUMN timer_started_at DATETIME')
+        statements.append(f'ALTER TABLE peer ADD COLUMN timer_started_at {timestamp_type}')
 
     if insp.has_table('subscription'):
         subscription_cols = {
@@ -266,7 +267,7 @@ def _peer_schema():
         }
         if 'timer_started_at' not in subscription_cols:
             statements.append(
-                'ALTER TABLE subscription ADD COLUMN timer_started_at DATETIME'
+                f'ALTER TABLE subscription ADD COLUMN timer_started_at {timestamp_type}'
             )
 
     if insp.has_table('subscription_peer'):
@@ -274,7 +275,7 @@ def _peer_schema():
         if 'owned' not in link_cols:
             statements.append(
                 'ALTER TABLE subscription_peer '
-                'ADD COLUMN owned BOOLEAN NOT NULL DEFAULT 0'
+                'ADD COLUMN owned BOOLEAN NOT NULL DEFAULT FALSE'
             )
 
     if statements:
@@ -333,7 +334,11 @@ def _backfill_peer_address_hosts():
             ),
         )
 
-    if 'uq_peer_iface_address_host' in {ix['name'] for ix in inspect(db.engine).get_indexes('peer')}:
+    inspector = inspect(db.engine)
+    if any(
+        item['name'] == 'uq_peer_iface_address_host'
+        for item in inspector.get_indexes('peer') + inspector.get_unique_constraints('peer')
+    ):
         return
 
     try:
@@ -375,6 +380,8 @@ def _interface_schema():
                 conn.execute(text(sql))
 
 app.config.from_object(Config)
+if app.config["SQLALCHEMY_DATABASE_URI"].get_backend_name() == "postgresql":
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "hide_parameters": True}
 os.makedirs(app.instance_path, exist_ok=True)
 db.init_app(app)
 
@@ -6529,7 +6536,10 @@ def backup_page():
     return render_template('backup.html')
 
 def _db_path():
-    return DB_PATH if os.path.isfile(DB_PATH) else None
+    url = db.engine.url
+    if url.get_backend_name() == 'sqlite' and url.database not in (None, '', ':memory:'):
+        return Path(url.database)
+    return None
 
 def _jsonl_bundle(z: zipfile.ZipFile):
     inst = Path(app.instance_path)
@@ -6671,6 +6681,14 @@ def _backup_restore_impl():
                     message='Restore kind must be auto, db, settings, or full.'
                 ), 400
 
+            if kind == 'db' or (kind == 'full' and has_db):
+                if POSTGRES_BACKUP in names or _db_path() is None:
+                    return jsonify(
+                        ok=False,
+                        error='offline_database_restore_required',
+                        message='Restore PostgreSQL with pg_restore. Use Settings-only here for panel settings.',
+                    ), 400
+
             inst = Path(app.instance_path)
             db_dir = inst / "restore_tmp_db"
             inst_dir = inst
@@ -6776,7 +6794,7 @@ def _backup_restore_impl():
                     src = db_files[0]
 
                     try:
-                        db_path = Path(DB_PATH)
+                        db_path = _db_path()
                         db_path.parent.mkdir(parents=True, exist_ok=True)
 
                         _backup_existing(db_path, kind_name="db", rel_tail=db_path.name)
@@ -7920,13 +7938,13 @@ def _send_zip_telegram(
 @app.get('/api/backup/db')
 @require_api_key_or_login
 def backup_db():
-    dbp = _db_path()
-    if not dbp or not os.path.isfile(dbp):
-        return jsonify(error='db_not_found_or_not_sqlite'), 404
-
     mem = BytesIO()
     with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.write(dbp, arcname=f'db/{os.path.basename(dbp)}')
+        try:
+            if not bundle_database(z, db.engine):
+                return jsonify(error='database_backup_unavailable'), 404
+        except Exception:
+            return jsonify(error='database_backup_failed', message='Check database access and pg_dump for PostgreSQL.'), 500
         z.writestr('meta/created.txt', datetime.utcnow().isoformat(timespec='seconds') + 'Z')
     mem.seek(0)
 
@@ -8347,10 +8365,10 @@ def backup_full():
         # -----------------------------
         # Includes peers, nodes, interfaces, subscriptions,
         # subscription links, limits, counters, etc.
-        dbp = _db_path()
-
-        if dbp and os.path.isfile(dbp):
-            z.write(dbp, arcname=f'db/{os.path.basename(dbp)}')
+        try:
+            has_database = bundle_database(z, db.engine)
+        except Exception:
+            return jsonify(error='database_backup_failed', message='Check database access and pg_dump for PostgreSQL.'), 500
 
         # -----------------------------
         # Instance JSON / JSONL
@@ -8405,7 +8423,7 @@ def backup_full():
         z.writestr(
             'meta/app.json',
             json.dumps({
-                'db_uri': app.config.get('SQLALCHEMY_DATABASE_URI', ''),
+                'db_backend': db.engine.dialect.name,
                 'wg_conf_path': app.config.get('WG_CONF_PATH') or '/etc/amnezia/amneziawg/',
             }, indent=2)
         )
@@ -8459,7 +8477,7 @@ def backup_full():
                 'kind': 'full',
                 'panel_version': PANEL_VERSION,
                 'contains': {
-                    'database': bool(dbp and os.path.isfile(dbp)),
+                    'database': has_database,
                     'instance_json': True,
                     'env_file': bool(panel_env_exists),
                     'remote_node_env': bool(node_env_count > 0),
@@ -14912,11 +14930,9 @@ def _repair_legacy_timer_rows():
     repaired_subscriptions = 0
 
     try:
-        if (
-            os.path.isfile(DB_PATH)
-            and not os.path.exists(_TIME_REPAIR_BACKUP)
-        ):
-            shutil.copy2(DB_PATH, _TIME_REPAIR_BACKUP)
+        source = _db_path()
+        if source and source.is_file() and not os.path.exists(_TIME_REPAIR_BACKUP):
+            snapshot_sqlite(source, Path(_TIME_REPAIR_BACKUP))
     except Exception:
         app.logger.warning(
             'Could not create pre-time-fix database backup',
@@ -31872,6 +31888,8 @@ if __name__ == "__main__":
     )
 
     if not use_gunicorn:
+        if app.config["SQLALCHEMY_DATABASE_URI"].get_backend_name() == "postgresql":
+            bootstrap()
         ssl_ctx = (cert_path, key_path) if tls_enabled else None
 
         if tls_enabled:
@@ -31993,6 +32011,15 @@ if __name__ == "__main__":
     except Exception as e:
         app.logger.exception("bootstrap failed: %s", e)
 
+    with app.app_context():
+        engine = db.engine
+    if engine.dialect.name == "postgresql":
+        # The launcher and its background threads may have opened connections.
+        # Workers need their own pool after fork.
+        def reset_database_pool(server, worker):
+            engine.dispose(close=False)
+
+        options["post_fork"] = reset_database_pool
     _Guni(app, options).run()
 
 

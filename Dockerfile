@@ -24,7 +24,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
        ca-certificates curl git iproute2 iptables iputils-ping jq kmod nftables \
-       openssl procps rsync tzdata unzip \
+       openssl postgresql-client procps rsync tzdata unzip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=awg-build /awg-install/usr/bin/ /usr/bin/

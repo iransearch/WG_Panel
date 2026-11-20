@@ -1,6 +1,6 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
-from sqlalchemy import BigInteger, Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import BigInteger, Column, Integer, String, Boolean, DateTime, Text, false
 from passlib.context import CryptContext
 pwd_ctx = CryptContext(
     schemes=["pbkdf2_sha256", "bcrypt_sha256", "bcrypt"],
@@ -149,7 +149,7 @@ class SubscriptionPeer(db.Model):
     id              = db.Column(db.Integer, primary_key=True)
     subscription_id = db.Column(db.Integer, db.ForeignKey('subscription.id'), nullable=False, index=True)
     peer_id         = db.Column(db.Integer, db.ForeignKey('peer.id'), nullable=False, index=True)
-    owned           = db.Column(db.Boolean, default=False, nullable=False, server_default='0')
+    owned           = db.Column(db.Boolean, default=False, nullable=False, server_default=false())
     location_label  = db.Column(db.String(128))
     country_code    = db.Column(db.String(2))
     flag            = db.Column(db.String(8))
@@ -172,6 +172,7 @@ class AdminAccount(db.Model):
     totp_secret   = db.Column(db.String(32))
     twofa_enabled = db.Column(db.Boolean, default=False)
     recovery_codes = db.Column(db.Text)
+    last_totp_counter = db.Column(db.Integer, server_default="0")
 
     @staticmethod
     def hash_pw(password: str) -> str:
