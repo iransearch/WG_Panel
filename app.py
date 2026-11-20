@@ -25,7 +25,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 from config import Config
-from panel_core.database import POSTGRES_BACKUP, bundle_database, snapshot_sqlite
+from panel_core.database import bundle_database
 from agent.awg_config import new_interface_lines, parameter_lines, read_parameters
 import time as _geo_time
 from urllib.parse import urlparse as _geo_urlparse
@@ -254,7 +254,6 @@ def _peer_schema():
         return
 
     statements = []
-    timestamp_type = 'TIMESTAMP' if db.engine.dialect.name == 'postgresql' else 'DATETIME'
 
     peer_cols = {c['name'] for c in insp.get_columns('peer')}
     if 'address_host' not in peer_cols:
@@ -262,7 +261,7 @@ def _peer_schema():
     if 'peer_endpoint' not in peer_cols:
         statements.append('ALTER TABLE peer ADD COLUMN peer_endpoint VARCHAR(128)')
     if 'timer_started_at' not in peer_cols:
-        statements.append(f'ALTER TABLE peer ADD COLUMN timer_started_at {timestamp_type}')
+        statements.append('ALTER TABLE peer ADD COLUMN timer_started_at TIMESTAMP')
 
     if insp.has_table('subscription'):
         subscription_cols = {
@@ -270,7 +269,7 @@ def _peer_schema():
         }
         if 'timer_started_at' not in subscription_cols:
             statements.append(
-                f'ALTER TABLE subscription ADD COLUMN timer_started_at {timestamp_type}'
+                'ALTER TABLE subscription ADD COLUMN timer_started_at TIMESTAMP'
             )
 
     if insp.has_table('subscription_peer'):
@@ -383,8 +382,7 @@ def _interface_schema():
                 conn.execute(text(sql))
 
 app.config.from_object(Config)
-if app.config["SQLALCHEMY_DATABASE_URI"].get_backend_name() == "postgresql":
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "hide_parameters": True}
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "hide_parameters": True}
 os.makedirs(app.instance_path, exist_ok=True)
 db.init_app(app)
 
@@ -6538,12 +6536,6 @@ def _save_autobackup(data_bytes: bytes, keep: int | None = None) -> dict:
 def backup_page():
     return render_template('backup.html')
 
-def _db_path():
-    url = db.engine.url
-    if url.get_backend_name() == 'sqlite' and url.database not in (None, '', ':memory:'):
-        return Path(url.database)
-    return None
-
 def _jsonl_bundle(z: zipfile.ZipFile):
     inst = Path(app.instance_path)
     keep_suffix = {'.json', '.jsonl'}
@@ -6685,15 +6677,13 @@ def _backup_restore_impl():
                 ), 400
 
             if kind == 'db' or (kind == 'full' and has_db):
-                if POSTGRES_BACKUP in names or _db_path() is None:
-                    return jsonify(
-                        ok=False,
-                        error='offline_database_restore_required',
-                        message='Restore PostgreSQL with pg_restore. Use Settings-only here for panel settings.',
-                    ), 400
+                return jsonify(
+                    ok=False,
+                    error='offline_database_restore_required',
+                    message='Restore a PostgreSQL dump with pg_restore. Use Settings-only here for panel settings.',
+                ), 400
 
             inst = Path(app.instance_path)
-            db_dir = inst / "restore_tmp_db"
             inst_dir = inst
             if server_settings_mode == 'custom' and custom_wg_path:
                 wg_dir = Path(custom_wg_path)
@@ -6782,37 +6772,6 @@ def _backup_restore_impl():
                         os.chmod(dest, 0o600)
                 except Exception:
                     pass
-
-            # -----------------------------
-            # Restore database
-            # -----------------------------
-            if kind in ("db", "full"):
-                for n in names:
-                    if n.startswith("db/") and not n.endswith("/"):
-                        _extract(n, db_dir, kind_name="db")
-
-                db_files = list(db_dir.glob("*.db"))
-
-                if db_files:
-                    src = db_files[0]
-
-                    try:
-                        db_path = _db_path()
-                        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-                        _backup_existing(db_path, kind_name="db", rel_tail=db_path.name)
-
-                        src.replace(db_path)
-                        restored["db"] = True
-
-                    except Exception as e:
-                        return jsonify(
-                            ok=False,
-                            error="db_restore_failed",
-                            message=str(e)
-                        ), 500
-                else:
-                    warnings.append("db_requested_but_no_db_file_found")
 
             # -----------------------------
             # Restore instance settings/json
@@ -7944,8 +7903,7 @@ def backup_db():
     mem = BytesIO()
     with zipfile.ZipFile(mem, 'w', zipfile.ZIP_DEFLATED) as z:
         try:
-            if not bundle_database(z, db.engine):
-                return jsonify(error='database_backup_unavailable'), 404
+            bundle_database(z, db.engine)
         except Exception:
             return jsonify(error='database_backup_failed', message='Check database access and pg_dump for PostgreSQL.'), 500
         z.writestr('meta/created.txt', datetime.utcnow().isoformat(timespec='seconds') + 'Z')
@@ -8369,7 +8327,7 @@ def backup_full():
         # Includes peers, nodes, interfaces, subscriptions,
         # subscription links, limits, counters, etc.
         try:
-            has_database = bundle_database(z, db.engine)
+            bundle_database(z, db.engine)
         except Exception:
             return jsonify(error='database_backup_failed', message='Check database access and pg_dump for PostgreSQL.'), 500
 
@@ -8480,7 +8438,7 @@ def backup_full():
                 'kind': 'full',
                 'panel_version': PANEL_VERSION,
                 'contains': {
-                    'database': has_database,
+                    'database': True,
                     'instance_json': True,
                     'env_file': bool(panel_env_exists),
                     'remote_node_env': bool(node_env_count > 0),
@@ -14836,12 +14794,6 @@ def repoint_endpoints():
     _write_lastip(cur)
 
 
-_TIME_REPAIR_BACKUP = os.path.join(
-    app.instance_path,
-    'wg_panel.db.pre-time-fix-v5.bak',
-)
-
-
 def _latest_peer_timer_event_ts(peer_id, event_names, *, details_needles=()):
     """Return the newest canonical UTC timestamp for a timer-anchor event."""
     try:
@@ -14892,16 +14844,6 @@ def _repair_legacy_timer_rows():
     """
     repaired_peers = 0
     repaired_subscriptions = 0
-
-    try:
-        source = _db_path()
-        if source and source.is_file() and not os.path.exists(_TIME_REPAIR_BACKUP):
-            snapshot_sqlite(source, Path(_TIME_REPAIR_BACKUP))
-    except Exception:
-        app.logger.warning(
-            'Could not create pre-time-fix database backup',
-            exc_info=True,
-        )
 
     for peer in Peer.query.order_by(Peer.id.asc()).all():
         if list(getattr(peer, 'subscription_links', []) or []):
@@ -31985,8 +31927,7 @@ if __name__ == "__main__":
     )
 
     if not use_gunicorn:
-        if app.config["SQLALCHEMY_DATABASE_URI"].get_backend_name() == "postgresql":
-            bootstrap()
+        bootstrap()
         _start_expiry_enforcer()
         ssl_ctx = (cert_path, key_path) if tls_enabled else None
 
@@ -32111,13 +32052,11 @@ if __name__ == "__main__":
 
     with app.app_context():
         engine = db.engine
-    if engine.dialect.name == "postgresql":
-        # The launcher and its background threads may have opened connections.
-        # Workers need their own pool after fork.
-        def reset_database_pool(server, worker):
-            engine.dispose(close=False)
+    # Workers need a fresh connection pool after fork.
+    def reset_database_pool(server, worker):
+        engine.dispose(close=False)
 
-        options["post_fork"] = reset_database_pool
+    options["post_fork"] = reset_database_pool
     def start_expiry_worker(worker):
         _start_expiry_enforcer()
 

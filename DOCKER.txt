@@ -63,3 +63,5 @@ For the node agent:
 git pull
 docker compose build --pull node-agent
 docker compose --profile node up -d --force-recreate node-agent
+
+Set DATABASE_URL in docker.env to a reachable PostgreSQL database before starting the panel.

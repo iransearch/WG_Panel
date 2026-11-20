@@ -139,7 +139,7 @@ function makeChart(ctx) {
   });
 }
 function initCharts() {
-  if (!$('cpuChart')) return;
+  if (!window.Chart || !$('cpuChart')) return;
   cpuChart  = lineChart($('cpuChart').getContext('2d'), 'CPU usage', '%');
   memChart  = lineChart($('memChart').getContext('2d'), 'Memory usage', '%');
   diskChart = lineChart($('diskChart').getContext('2d'), 'Disk usage', '%');
@@ -491,7 +491,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // updateStats();
     });
   });
-  initCharts();
+  const startCharts = () => requestAnimationFrame(initCharts);
+  if (document.readyState === 'complete') startCharts();
+  else window.addEventListener('load', startCharts, { once: true });
 
   ['#mem-val','#disk-val'].forEach(id=>{
     const n = document.querySelector(id);

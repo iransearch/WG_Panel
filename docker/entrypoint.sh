@@ -87,7 +87,8 @@ case "$ROLE" in
     [ -n "$saved_api" ] && API_KEY="$saved_api"
     write_panel_secrets
 
-    export DATABASE_URL="${DATABASE_URL:-sqlite:///instance/wg_panel.db}"
+    : "${DATABASE_URL:?Set DATABASE_URL to a PostgreSQL connection URL for the panel}"
+    export DATABASE_URL
     export LOG_LEVEL="${LOG_LEVEL:-INFO}"
     export SECURE_COOKIES="${SECURE_COOKIES:-0}"
     export AMNEZIAWG_CONF_PATH="${AMNEZIAWG_CONF_PATH:-/etc/amnezia/amneziawg}"

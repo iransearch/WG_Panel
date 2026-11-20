@@ -58,8 +58,6 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
 
     service = (host or {}).get("panel_service") or "wg-panel.service"
     env_q = shlex.quote(str(Path(root_path or ".") / ".env"))
-    db_path = Path(instance_path or "instance") / "wg_panel.db"
-    db_q = shlex.quote(str(db_path))
     backups_q = shlex.quote(str(Path(instance_path or "instance") / "backups"))
 
     def action(label, path, icon="fa-arrow-up-right-from-square", hint=""):
@@ -223,21 +221,6 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
             ]
             verification = {"text": "A recent backup should exist and a test restore should periodically be performed on an isolated installation.", "commands": []}
 
-        elif key == "db_integrity":
-            severity = "critical"
-            cause = "SQLite quick_check reported a structural issue. The diagnostic withholds row/content details."
-            actions = [
-                action("Open Backup first", "/backup?from=operations", "fa-box-archive", "Create a verified copy before recovery"),
-                action("Open Application logs", "/logs?source=app&level=error&from=operations", "fa-file-lines", "Inspect database-related application errors"),
-            ]
-            steps = [
-                _manual_step("Stop making configuration changes", "Avoid peer/settings writes until a verified backup exists."),
-                _manual_step("Create a full backup", "Use the panel Backup page before any database recovery."),
-                _manual_step("Re-check an isolated copy", commands=[f"python3 -c \"import sqlite3; c=sqlite3.connect({repr(str(db_path))}); print(c.execute('PRAGMA quick_check').fetchone()[0]); c.close()\""]),
-                _manual_step("Recover from a copy, not the live file", "Do not delete or recreate the production database as a repair shortcut."),
-            ]
-            verification = {"text": "An isolated copy should pass PRAGMA quick_check before it is considered for recovery.", "commands": []}
-
         elif key == "database":
             severity = "critical" if status == "unknown" else "high"
             cause = "The application could not confirm normal database connectivity."
@@ -246,10 +229,10 @@ def _enrich_guidance(items, host, *, remote=False, root_path=None, instance_path
                 action("Open Backup", "/backup?from=operations", "fa-box-archive", "Protect the current data before recovery"),
             ]
             steps = [
-                _manual_step("Check the database path and panel logs", commands=[f"ls -lh {db_q} 2>/dev/null || true", f"journalctl -u {service} -n 120 --no-pager"]),
-                _manual_step("Verify the configured connection", "Confirm DATABASE_URL, path ownership, filesystem space, and service account. Do not recreate the database to clear a connection error."),
+                _manual_step("Check the panel logs", commands=[f"journalctl -u {service} -n 120 --no-pager"]),
+                _manual_step("Verify the configured connection", "Confirm the PostgreSQL URL, credentials, reachability and disk space on the database server."),
             ]
-            verification = {"text": "The panel should complete SELECT 1 and, for SQLite, a bounded quick_check.", "commands": []}
+            verification = {"text": "The panel should complete SELECT 1 against PostgreSQL.", "commands": []}
 
         elif key == "listen_ports":
             severity = "high"
@@ -817,32 +800,6 @@ def collect(app, context):
         engine = db.engine
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
-            if engine.dialect.name == "sqlite":
-                raw = connection.connection.driver_connection
-                deadline = time.monotonic() + 2
-                raw.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
-                try:
-                    messages = connection.execute(text("PRAGMA quick_check(1)")).scalars().all()
-                finally:
-                    raw.set_progress_handler(None, 0)
-                good = messages == ["ok"]
-                add(
-                    "db_integrity",
-                    "SQLite structural integrity",
-                    "pass" if good else "warning",
-                    "Bounded quick_check passed." if good else "SQLite reported a structural issue; details are withheld to avoid exposing data.",
-                    "Stop writes and make a filesystem/database backup before recovery. Test recovery on an isolated copy; never delete the live database to repair it.",
-                    category="database",
-                )
-            else:
-                add(
-                    "db_integrity",
-                    "Database structural integrity",
-                    "review",
-                    "Automatic integrity checks are limited to SQLite.",
-                    "Use database-specific integrity tooling against an isolated backup.",
-                    category="database",
-                )
         add(
             "database",
             "Database connectivity",

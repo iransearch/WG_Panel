@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -16,6 +15,9 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, render_template, request
 from flask_login import current_user
+from sqlalchemy import delete, func, select
+
+from models import OperationEvent, db as panel_db
 
 from auth import admin_required
 from .checks import collect, collect_node, collect_node_report
@@ -41,28 +43,15 @@ def register_operations(app, context):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             yield
 
-    @contextmanager
-    def history_connection():
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        connection = sqlite3.connect(root / "history.sqlite3", timeout=3)
-        try:
-            with connection:
-                connection.execute(
-                    "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, ts REAL, actor TEXT, kind TEXT, payload TEXT)"
-                )
-                yield connection
-        finally:
-            connection.close()
+    events = OperationEvent.__table__
 
     def record(kind, payload):
-        with history_connection() as connection:
-            connection.execute(
-                "INSERT INTO events(ts, actor, kind, payload) VALUES(?,?,?,?)",
-                (time.time(), str(current_user.get_id()), kind, json.dumps(payload)),
-            )
-            connection.execute(
-                "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT 150)"
-            )
+        with panel_db.engine.begin() as connection:
+            connection.execute(events.insert().values(
+                ts=time.time(), actor=str(current_user.get_id()), kind=kind, payload=payload,
+            ))
+            recent = select(events.c.id).order_by(events.c.id.desc()).limit(150)
+            connection.execute(delete(events).where(events.c.id.not_in(recent)))
 
     def counts(checks):
         out = {"pass": 0, "warning": 0, "review": 0, "unknown": 0}
@@ -393,16 +382,9 @@ def register_operations(app, context):
     @bp.get("/api/operations/history")
     @admin_required
     def history():
-        with history_connection() as connection:
-            rows = connection.execute(
-                "SELECT id,ts,actor,kind,payload FROM events ORDER BY id DESC LIMIT 40"
-            ).fetchall()
-        return jsonify(
-            events=[
-                dict(id=r[0], ts=r[1], actor=r[2], kind=r[3], payload=json.loads(r[4]))
-                for r in rows
-            ]
-        )
+        with panel_db.engine.connect() as connection:
+            rows = connection.execute(select(events).order_by(events.c.id.desc()).limit(40)).mappings().all()
+        return jsonify(events=[dict(row) for row in rows])
 
     @bp.get("/api/operations/nodes")
     @admin_required
@@ -424,8 +406,8 @@ def register_operations(app, context):
     def scan():
         try:
             with locked():
-                with history_connection() as connection:
-                    previous = connection.execute("SELECT MAX(ts) FROM events WHERE kind='scan'").fetchone()[0]
+                with panel_db.engine.connect() as connection:
+                    previous = connection.scalar(select(func.max(events.c.ts)).where(events.c.kind == "scan"))
                 if previous and time.time() - previous < 10:
                     return jsonify(error="Please wait 10 seconds between scans."), 429
                 data = request.get_json(silent=True)

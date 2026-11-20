@@ -5,7 +5,6 @@ Flask-Login
 psutil
 python-dotenv
 ipaddress
-PyMySQL
 qrcode[pil]>=7.4,<8.0
 gunicorn
 python-telegram-bot>=22.5

@@ -192,3 +192,11 @@ class Admin2FA(db.Model):
     recovery_hashes = Column(Text, nullable=True)     
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class OperationEvent(db.Model):
+    id = db.Column(db.BigInteger, primary_key=True)
+    ts = db.Column(db.Float, nullable=False)
+    actor = db.Column(db.Text, nullable=False)
+    kind = db.Column(db.Text, nullable=False)
+    payload = db.Column(db.JSON, nullable=False)

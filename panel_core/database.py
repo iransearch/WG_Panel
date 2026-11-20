@@ -1,53 +1,34 @@
 """Database URL handling and consistent backups for the panel database."""
 
 import os
-import sqlite3
 import subprocess
 import tempfile
-from contextlib import closing
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
 
 
-DEFAULT_DATABASE_URL = "sqlite:///instance/wg_panel.db"
 POSTGRES_BACKUP = "db/wg_panel.pg.dump"
 
 
-def database_url(value, root):
-    url = make_url(value or DEFAULT_DATABASE_URL)
-    if url.drivername in ("postgres", "postgresql"):
-        return url.set(drivername="postgresql+psycopg")
-    if url.get_backend_name() == "sqlite" and url.database not in (None, "", ":memory:"):
-        path = Path(root) / url.database
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return url.set(database=str(path))
-    return url
-
-
-def snapshot_sqlite(source: Path, target: Path):
-    # Open read-only so a wrong source path cannot create an empty database.
-    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src:
-        with closing(sqlite3.connect(target)) as dst:
-            src.backup(dst)
+def database_url(value):
+    message = "Configure a PostgreSQL DATABASE_URL before starting WG Panel."
+    if not value:
+        raise ValueError(message)
+    try:
+        url = make_url(value)
+    except Exception:
+        raise ValueError(message) from None
+    if url.drivername not in {"postgres", "postgresql", "postgresql+psycopg"} or not url.database:
+        raise ValueError(message)
+    return url.set(drivername="postgresql+psycopg")
 
 
 def bundle_database(archive, engine):
-    backend = engine.dialect.name
     with tempfile.TemporaryDirectory(prefix="wg-panel-backup-") as directory:
         target = Path(directory) / "database"
-        if backend == "sqlite" and engine.url.database not in (None, "", ":memory:"):
-            source = Path(engine.url.database)
-            if not source.is_file():
-                return False
-            snapshot_sqlite(source, target)
-            archive.write(target, arcname="db/" + source.name)
-        elif backend == "postgresql":
-            _dump_postgresql(engine, target)
-            archive.write(target, arcname=POSTGRES_BACKUP)
-        else:
-            return False
-    return True
+        _dump_postgresql(engine, target)
+        archive.write(target, arcname=POSTGRES_BACKUP)
 
 
 def _dump_postgresql(engine, target):

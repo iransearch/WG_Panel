@@ -67,5 +67,14 @@
   window.addEventListener('wg-theme-change',themeCharts);
   document.addEventListener('visibilitychange',()=>{clearTimeout(fastTimer);clearTimeout(slowTimer);if(!document.hidden){refreshStats();refreshDetails();}});
   window.addEventListener('pagehide',()=>{clearTimeout(fastTimer);clearTimeout(slowTimer);});
-  initCharts();Promise.resolve(window.WG_PANEL_TIMEZONE_READY).finally(()=>{refreshStats();refreshDetails();});
+  const startCharts = () => requestAnimationFrame(() => {
+    initCharts();
+    drawTraffic();
+  });
+  if (document.readyState === 'complete') startCharts();
+  else window.addEventListener('load', startCharts, {once: true});
+  Promise.resolve(window.WG_PANEL_TIMEZONE_READY).finally(() => {
+    refreshStats();
+    refreshDetails();
+  });
 })();

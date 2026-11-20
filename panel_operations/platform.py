@@ -237,10 +237,10 @@ def command_guide(profile: dict | None = None) -> list[dict]:
         {
             "id": "database",
             "title": "Database",
-            "description": "For the default SQLite deployment, integrity_check is read-only. Back up the database before any repair or migration.",
+            "description": "Check PostgreSQL availability and create a verified PostgreSQL backup before recovery.",
             "items": [
-                {"label": "SQLite file", "commands": ["ls -lh instance/wg_panel.db 2>/dev/null || true", "stat -c '%a %U:%G %s bytes %n' instance/wg_panel.db 2>/dev/null || true"]},
-                {"label": "SQLite integrity", "commands": ["python3 -c \"import sqlite3; c=sqlite3.connect('instance/wg_panel.db'); print(c.execute('PRAGMA integrity_check').fetchone()[0]); c.close()\""]},
+                {"label": "Local database readiness", "commands": ["pg_isready -h 127.0.0.1 -p 5432"]},
+                {"label": "PostgreSQL client", "commands": ["pg_dump --version"]},
             ],
         },
         {
@@ -260,7 +260,7 @@ def command_guide(profile: dict | None = None) -> list[dict]:
             "items": [
                 {"label": "Largest application/log paths", "commands": ["du -xh /opt /var/log 2>/dev/null | sort -h | tail -40"]},
                 {"label": "Journal usage", "commands": ["journalctl --disk-usage"]},
-                {"label": "Recent backup files", "commands": ["find instance -maxdepth 3 -type f \\( -name '*.zip' -o -name '*.sqlite3' -o -name '*.db' \\) -printf '%TY-%Tm-%Td %TH:%TM %10s %p\\n' 2>/dev/null | sort | tail -40"]},
+                {"label": "Recent backup files", "commands": ["find instance -maxdepth 3 -type f \\( -name '*.zip' -o -name '*.dump' \\) -printf '%TY-%Tm-%Td %TH:%TM %10s %p\\n' 2>/dev/null | sort | tail -40"]},
             ],
         },
     ])

@@ -704,8 +704,8 @@
                                                                 </div>
 
                                                                 <div class="k">DATABASE_URL</div>
-                                                                <div><input class="inp mono" name="DATABASE_URL"
-                                                                                value="{{ ENVD.get('DATABASE_URL','sqlite:///instance/wg_panel.db') }}">
+                                                                <div><input class="inp mono" name="DATABASE_URL" required placeholder="postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME"
+                                                                                value="{{ ENVD.get('DATABASE_URL','') }}">
                                                                 </div>
 
                                                                 <div class="k">LOG_LEVEL</div>

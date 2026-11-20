@@ -263,6 +263,12 @@ def validate(root: Path, scope: str):
     if not existing:
         raise RuntimeError("No expected Python entrypoint found after update.")
     run([str(py), "-m", "py_compile", *existing], timeout=90)
+    if scope == "panel":
+        run([str(py), "-c", (
+            "import os; from dotenv import load_dotenv; "
+            "from panel_core.database import database_url; "
+            "load_dotenv('.env'); database_url(os.getenv('DATABASE_URL'))"
+        )], cwd=root, timeout=30)
 
 def _optional_nftables(log=None):
 

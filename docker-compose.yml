@@ -20,7 +20,7 @@ services:
       LOG_LEVEL: "${LOG_LEVEL:-INFO}"
       SECURE_COOKIES: "${SECURE_COOKIES:-0}"
       AMNEZIAWG_CONF_PATH: /etc/amnezia/amneziawg
-      DATABASE_URL: "${DATABASE_URL:-sqlite:///instance/wg_panel.db}"
+      DATABASE_URL: "${DATABASE_URL:-}"
       FLASK_SECRET_KEY: "${FLASK_SECRET_KEY:-}"
       FERNET_KEY: "${FERNET_KEY:-}"
       API_KEY: "${API_KEY:-}"

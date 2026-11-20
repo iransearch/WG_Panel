@@ -9,7 +9,7 @@ os.makedirs(INSTANCE_DIR, exist_ok=True)
 
 class Config:
     SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "change-me")
-    SQLALCHEMY_DATABASE_URI = database_url(os.getenv("DATABASE_URL"), BASE_DIR)
+    SQLALCHEMY_DATABASE_URI = database_url(os.getenv("DATABASE_URL"))
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     WG_CONF_PATH = os.environ.get("AMNEZIAWG_CONF_PATH", "/etc/amnezia/amneziawg/")

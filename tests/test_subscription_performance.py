@@ -8,17 +8,20 @@ from unittest.mock import patch
 from cryptography.fernet import Fernet
 from sqlalchemy import event, inspect
 
-from models import InterfaceConfig, Peer, Subscription, SubscriptionPeer, db
+from models import AdminAccount, InterfaceConfig, OperationEvent, Peer, Subscription, SubscriptionPeer, db
 
 
 class SubscriptionPerformanceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        database_url = os.environ.get('WG_PANEL_TEST_DATABASE_URL')
+        if not database_url:
+            raise unittest.SkipTest('Set WG_PANEL_TEST_DATABASE_URL to an empty PostgreSQL database.')
         temporary = TemporaryDirectory()
         cls.addClassCleanup(temporary.cleanup)
         cls.lock = Path(temporary.name) / 'expiry.lock'
         with patch.dict(os.environ, {
-            'DATABASE_URL': os.environ.get('WG_PANEL_TEST_DATABASE_URL', 'sqlite:///:memory:'),
+            'DATABASE_URL': database_url,
             'FERNET_KEY': Fernet.generate_key().decode(),
             'API_KEY': 'subscription-test',
         }), patch('threading.Thread.start'):
@@ -220,6 +223,20 @@ class SubscriptionPerformanceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json()['reason'], 'data_exhausted')
         self.assertEqual(sub.links[0].peer.used_bytes_total, 0)
+
+    def test_operations_history_is_persisted_in_postgresql(self):
+        db.session.add(AdminAccount(username='operator', password_hash='fixture'))
+        db.session.commit()
+        with self.client.session_transaction() as session:
+            session['_user_id'] = '1'
+            session['_fresh'] = True
+        with patch('panel_operations.collect', return_value=[]):
+            response = self.client.post('/api/operations/scan', json={})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(OperationEvent.query.one().kind, 'scan')
+        response = self.client.get('/api/operations/history')
+        self.assertEqual(response.get_json()['events'][0]['payload']['checks'], [])
+        self.assertEqual(self.client.post('/api/operations/scan', json={}).status_code, 429)
 
     def test_expiry_lock_prevents_two_sweeps_in_same_interval(self):
         self.lock.unlink(missing_ok=True)

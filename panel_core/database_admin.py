@@ -13,9 +13,7 @@ from panel_core.database import database_url
 
 def main():
     root = Path.cwd()
-    url = database_url(dotenv_values(root / ".env").get("DATABASE_URL"), root)
-    if url.get_backend_name() != "postgresql":
-        sys.exit("This command requires an active PostgreSQL configuration.")
+    url = database_url(dotenv_values(root / ".env").get("DATABASE_URL"))
     engine = create_engine(url, hide_parameters=True, connect_args={"connect_timeout": 5})
     accounts = AdminAccount.__table__
     try:
