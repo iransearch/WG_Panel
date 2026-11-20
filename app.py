@@ -52,6 +52,7 @@ from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
 from sqlalchemy import or_, and_, text, inspect, func, event
 from sqlalchemy.orm import joinedload, selectinload
+from flask_compress import Compress
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from urllib.parse import urlparse, urljoin
 import secrets
@@ -499,6 +500,27 @@ def _log_request(resp):
     except Exception:
         pass
     return resp
+
+
+app.config.update(
+    COMPRESS_REGISTER=False,
+    COMPRESS_MIMETYPES=["text/css", "text/javascript", "application/javascript"],
+    COMPRESS_ALGORITHM=["gzip"],
+    COMPRESS_ALGORITHM_STREAMING=["gzip"],
+    COMPRESS_LEVEL=4,
+)
+static_compressor = Compress(app)
+
+
+@app.after_request
+def compress_static_assets(response):
+    if (
+        request.endpoint == "static"
+        and response.mimetype in app.config["COMPRESS_MIMETYPES"]
+        and not request.headers.get("Range")
+    ):
+        return static_compressor.after_request(response)
+    return response
 
 
 @app.after_request
