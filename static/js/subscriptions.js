@@ -1123,54 +1123,6 @@ function rowHtml(s){
   </article>`;
 }
 
-async function loadSubs(opts={}){
-  try { await (window.WG_PANEL_TIMEZONE_READY || Promise.resolve()); } catch (_) {}
-  if(SUBS_LOADING) return;
-  if(!opts.force && (document.hidden || modalIsOpen() || window.WGSubscriptionPaused)) return;
-  SUBS_LOADING = true;
-  if(!SUBS_LAST_JSON) setLiveState('Loading…', 'loading');
-  try {
-    const r=await fetch('/api/subscriptions',{credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
-    const j=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(j.detail || j.error || 'Load failed');
-    const next = j.subscriptions || [];
-    if(next[0]?.display_timezone && typeof window.wgPanelApplyTimezone === 'function') window.wgPanelApplyTimezone(next[0].display_timezone, false);
-    const nextJson = JSON.stringify(next);
-    SUBS = next;
-    const repairClient=new URLSearchParams(location.search).get('diagnosis_client');
-    if(repairClient&&!window.__diagnosisClientOpened){
-      window.__diagnosisClientOpened=true;
-      const cleanURL=new URL(location.href);cleanURL.searchParams.delete('diagnosis_client');history.replaceState(history.state,'',cleanURL);
-      if(SUBS.some(s=>String(s.id)===repairClient))setTimeout(()=>openDiagnosisClient(repairClient),0);
-      else toastBad('The requested client is unavailable. It may have been removed.');
-    }
-    if(opts.force || nextJson !== SUBS_LAST_JSON){
-      $('#subs-list').innerHTML=SUBS.map(rowHtml).join('');
-      $('#subs-empty').hidden=SUBS.length>0;
-      SUBS_LAST_JSON = nextJson;
-    }
-    $('#st-total').textContent=SUBS.length;
-    $('#st-inbounds').textContent=SUBS.reduce((a,s)=>a+(s.locations||[]).length,0);
-    const blocked = SUBS.reduce((a,s)=> a + (subscriptionState(s).cls === 'blocked' ? 1 : 0), 0);
-    $('#st-blocked').textContent = blocked;
-
-    if(detailsIsOpen()){
-      const openId = $('#details-modal')?.dataset?.sid;
-      const current = SUBS.find(x=>String(x.id)===String(openId));
-      if(current) renderDetails(current, {keepOpen:true});
-    }
-    SUBS_FAILURES = 0;
-    setLiveState('Up to date');
-    const status = document.getElementById('subx-live-state');
-    if(status) status.title = `Last successful refresh: ${nowClock()}`;
-  } catch(err) {
-    SUBS_FAILURES = Math.min(SUBS_FAILURES + 1, 3);
-    setLiveState('Update unavailable · retrying', 'error');
-  } finally {
-    SUBS_LOADING = false;
-  }
-}
-
 function setEditLayout(isEdit, allowInboundPicker=false){
   const modal = $('#sub-modal');
   const inbound = $('#sub-inbound-section');
@@ -2675,42 +2627,18 @@ function subxScopeOf(s){
   return 'none';
 }
 
-function subxStatusMatch(s, status){
-  const st = subxSubscriptionState(s);
-  const remPct = subxRemainingPct(s);
-  const ttl = s.ttl_seconds == null ? null : Number(s.ttl_seconds || 0);
-  if(status === 'all') return true;
-  if(status === 'ready') return st.cls === 'online';
-  if(status === 'blocked') return st.cls === 'blocked';
-  if(status === 'disabled') return st.cls === 'disabled';
-  if(status === 'empty') return !(s.locations || []).length;
-  if(status === 'low-data') return !!s.limit_bytes && remPct <= 20;
-  if(status === 'expiring') return ttl !== null && ttl > 0 && ttl <= 3 * 86400;
-  return true;
-}
+let SUBS_PAGE = {page: 1, pages: 1, total: 0, per_page: 8};
+let SUBS_RELOAD_PENDING = false;
+let SUBS_SEARCH_TIMER;
 
-function subxFilterSubs(){
-  const q = (SUBX_LIST.q || '').trim().toLowerCase();
-  return (SUBS || []).filter(s => {
-    if(!subxStatusMatch(s, SUBX_LIST.status)) return false;
-    if(SUBX_LIST.scope !== 'all'){
-      const scope = subxScopeOf(s);
-      if(SUBX_LIST.scope === 'mixed'){
-        if(scope !== 'mixed') return false;
-      } else if(scope !== SUBX_LIST.scope && scope !== 'mixed') {
-        return false;
-      }
-    }
-    if(!q) return true;
-    const blob = [
-      s.name, s.note, s.phone_number, s.telegram_id, s.status,
-      ...(s.locations || []).flatMap(l => [
-        l.name, l.iface, l.address, l.endpoint, l.location_label,
-        l.node_name, l.scope, l.status, l.public_host
-      ])
-    ].map(v => String(v || '').toLowerCase()).join(' ');
-    return blob.includes(q);
+function subscriptionPageParams(){
+  const params = new URLSearchParams({
+    page: SUBX_LIST.page, per_page: SUBX_LIST.perPage,
+    q: SUBX_LIST.q, status: SUBX_LIST.status, scope: SUBX_LIST.scope
   });
+  const focus = new URLSearchParams(location.search).get('diagnosis_client');
+  if(focus && !window.__diagnosisClientOpened) params.set('focus', focus);
+  return params;
 }
 
 function subxEnsureListTools(){
@@ -2752,7 +2680,8 @@ function subxEnsureListTools(){
   document.getElementById('subx-list-search')?.addEventListener('input', e => {
     SUBX_LIST.q = e.target.value || '';
     SUBX_LIST.page = 1;
-    renderSubscriptions();
+    clearTimeout(SUBS_SEARCH_TIMER);
+    SUBS_SEARCH_TIMER = setTimeout(() => loadSubs({force:true}), 250);
   });
 
   tools.querySelectorAll('[data-sub-filter]').forEach(btn => {
@@ -2760,7 +2689,7 @@ function subxEnsureListTools(){
       SUBX_LIST.status = btn.dataset.subFilter || 'all';
       SUBX_LIST.page = 1;
       tools.querySelectorAll('[data-sub-filter]').forEach(b => b.classList.toggle('active', b === btn));
-      renderSubscriptions();
+      loadSubs({force:true});
     });
   });
 
@@ -2769,7 +2698,7 @@ function subxEnsureListTools(){
       SUBX_LIST.scope = btn.dataset.subScope || 'all';
       SUBX_LIST.page = 1;
       tools.querySelectorAll('[data-sub-scope]').forEach(b => b.classList.toggle('active', b === btn));
-      renderSubscriptions();
+      loadSubs({force:true});
     });
   });
 }
@@ -2908,13 +2837,9 @@ function renderSubscriptions(){
   const pager = document.getElementById('subx-pagination');
   if(!list) return;
 
-  const filtered = subxFilterSubs();
-  const total = filtered.length;
-  const perPage = Math.max(1, Number(SUBX_LIST.perPage || 8));
-  const pages = Math.max(1, Math.ceil(total / perPage));
-  SUBX_LIST.page = Math.max(1, Math.min(Number(SUBX_LIST.page || 1), pages));
-  const start = (SUBX_LIST.page - 1) * perPage;
-  const rows = filtered.slice(start, start + perPage);
+  const {total, pages, page, per_page: perPage} = SUBS_PAGE;
+  const start = (page - 1) * perPage;
+  const rows = SUBS;
 
   list.innerHTML = rows.map(rowHtml).join('');
 
@@ -2937,43 +2862,50 @@ function renderSubscriptions(){
     pager.innerHTML = `
       <div class="subx-page-info">${from}-${to} of ${total} clients</div>
       <div class="subx-page-controls">
-        <button type="button" data-page-first ${SUBX_LIST.page<=1?'disabled':''}><i class="fas fa-angles-left"></i></button>
-        <button type="button" data-page-prev ${SUBX_LIST.page<=1?'disabled':''}><i class="fas fa-chevron-left"></i></button>
-        <span>Page <b>${SUBX_LIST.page}</b> of <b>${pages}</b></span>
-        <button type="button" data-page-next ${SUBX_LIST.page>=pages?'disabled':''}><i class="fas fa-chevron-right"></i></button>
-        <button type="button" data-page-last ${SUBX_LIST.page>=pages?'disabled':''}><i class="fas fa-angles-right"></i></button>
+        <button type="button" data-page-first ${page<=1?'disabled':''}><i class="fas fa-angles-left"></i></button>
+        <button type="button" data-page-prev ${page<=1?'disabled':''}><i class="fas fa-chevron-left"></i></button>
+        <span>Page <b>${page}</b> of <b>${pages}</b></span>
+        <button type="button" data-page-next ${page>=pages?'disabled':''}><i class="fas fa-chevron-right"></i></button>
+        <button type="button" data-page-last ${page>=pages?'disabled':''}><i class="fas fa-angles-right"></i></button>
         <select id="subx-per-page" class="input" aria-label="Clients per page">
           ${[5,8,12,20,50].map(n=>`<option value="${n}" ${n===perPage?'selected':''}>${n} / page</option>`).join('')}
         </select>
       </div>
     `;
-    pager.querySelector('[data-page-first]')?.addEventListener('click',()=>{SUBX_LIST.page=1;renderSubscriptions();});
-    pager.querySelector('[data-page-prev]')?.addEventListener('click',()=>{SUBX_LIST.page--;renderSubscriptions();});
-    pager.querySelector('[data-page-next]')?.addEventListener('click',()=>{SUBX_LIST.page++;renderSubscriptions();});
-    pager.querySelector('[data-page-last]')?.addEventListener('click',()=>{SUBX_LIST.page=pages;renderSubscriptions();});
+    pager.querySelector('[data-page-first]')?.addEventListener('click',()=>{SUBX_LIST.page=1;loadSubs({force:true});});
+    pager.querySelector('[data-page-prev]')?.addEventListener('click',()=>{SUBX_LIST.page=page-1;loadSubs({force:true});});
+    pager.querySelector('[data-page-next]')?.addEventListener('click',()=>{SUBX_LIST.page=page+1;loadSubs({force:true});});
+    pager.querySelector('[data-page-last]')?.addEventListener('click',()=>{SUBX_LIST.page=pages;loadSubs({force:true});});
     pager.querySelector('#subx-per-page')?.addEventListener('change',e=>{
       SUBX_LIST.perPage = Number(e.target.value || 8);
       try{localStorage.setItem('subx-per-page', String(SUBX_LIST.perPage));}catch(_){}
       SUBX_LIST.page = 1;
-      renderSubscriptions();
+      loadSubs({force:true});
     });
   }
 }
 
 async function loadSubs(opts={}){
   try { await (window.WG_PANEL_TIMEZONE_READY || Promise.resolve()); } catch (_) {}
-  if(SUBS_LOADING) return;
+  if(SUBS_LOADING){
+    if(opts.force) SUBS_RELOAD_PENDING = true;
+    return;
+  }
   if(!opts.force && (document.hidden || modalIsOpen() || window.WGSubscriptionPaused)) return;
+  const params = subscriptionPageParams().toString();
   SUBS_LOADING = true;
   if(!SUBS_LAST_JSON) setLiveState('Loading…', 'loading');
   try {
-    const r = await fetch('/api/subscriptions', {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
+    const r = await fetch('/api/subscriptions?' + params, {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
     const j = await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(j.detail || j.error || 'Load failed');
 
+    if(params !== subscriptionPageParams().toString()) return;
     const next = j.subscriptions || [];
+    SUBS_PAGE = j.pagination;
+    SUBX_LIST.page = SUBS_PAGE.page;
     if(next[0]?.display_timezone && typeof window.wgPanelApplyTimezone === 'function') window.wgPanelApplyTimezone(next[0].display_timezone, false);
-    const nextJson = JSON.stringify(next);
+    const nextJson = JSON.stringify([next, SUBS_PAGE]);
     SUBS = next;
     const repairClient=new URLSearchParams(location.search).get('diagnosis_client');
     if(repairClient&&!window.__diagnosisClientOpened){
@@ -2991,21 +2923,17 @@ async function loadSubs(opts={}){
       SUBS_LAST_JSON = nextJson;
     }
 
-    const totalEl = $('#st-total');
-    const inboundEl = $('#st-inbounds');
-    const blockedEl = $('#st-blocked');
-    if(totalEl) totalEl.textContent = SUBS.length;
-    if(inboundEl) inboundEl.textContent = SUBS.reduce((a,s)=>a+(s.locations||[]).length,0);
-    if(blockedEl) blockedEl.textContent = SUBS.reduce((a,s)=> a + (subxSubscriptionState(s).cls === 'blocked' ? 1 : 0), 0);
-    $('#st-enabled').textContent=SUBS.filter(s=>s.enabled && s.access?.allowed===true).length;
-    $('#st-disabled').textContent=SUBS.filter(s=>!s.enabled).length;
-    $('#st-unassigned').textContent=SUBS.filter(s=>!(s.locations||[]).length).length;
-    $('#st-used').textContent=fmtBytes(SUBS.reduce((sum,s)=>sum+Math.max(0,Number(s.used_bytes)||0),0));
-    $('#st-modern-total').textContent=SUBS.length;
-    $('#st-modern-inbounds').textContent=SUBS.reduce((sum,s)=>sum+(s.locations||[]).length,0);
-    $('#st-modern-blocked').textContent=SUBS.filter(s=>s.access?.allowed===false || !s.enabled).length;
-    $('#st-expired').textContent=SUBS.filter(s=>s.access?.reason==='expired').length;
-    $('#st-exhausted').textContent=SUBS.filter(s=>s.access?.reason==='data_exhausted').length;
+    const stats = j.summary;
+    for(const [id, value] of Object.entries({
+      'st-total': stats.total, 'st-inbounds': stats.inbounds, 'st-blocked': stats.blocked,
+      'st-enabled': stats.enabled, 'st-disabled': stats.disabled, 'st-unassigned': stats.unassigned,
+      'st-used': fmtBytes(stats.used), 'st-modern-total': stats.total,
+      'st-modern-inbounds': stats.inbounds, 'st-modern-blocked': stats.restricted,
+      'st-expired': stats.expired, 'st-exhausted': stats.exhausted,
+    })){
+      const element = document.getElementById(id);
+      if(element) element.textContent = value;
+    }
 
     if(detailsIsOpen()){
       const openId = $('#details-modal')?.dataset?.sid;
@@ -3021,6 +2949,10 @@ async function loadSubs(opts={}){
     setLiveState('Update unavailable · retrying', 'error');
   } finally {
     SUBS_LOADING = false;
+    if(SUBS_RELOAD_PENDING){
+      SUBS_RELOAD_PENDING = false;
+      loadSubs({force:true});
+    }
   }
 }
 

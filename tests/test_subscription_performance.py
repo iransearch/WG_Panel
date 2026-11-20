@@ -1,0 +1,167 @@
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+from unittest.mock import patch
+
+from cryptography.fernet import Fernet
+from sqlalchemy import event, inspect
+
+from models import InterfaceConfig, Peer, Subscription, SubscriptionPeer, db
+
+
+class SubscriptionPerformanceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        temporary = TemporaryDirectory()
+        cls.addClassCleanup(temporary.cleanup)
+        cls.lock = Path(temporary.name) / 'expiry.lock'
+        with patch.dict(os.environ, {
+            'DATABASE_URL': os.environ.get('WG_PANEL_TEST_DATABASE_URL', 'sqlite:///:memory:'),
+            'FERNET_KEY': Fernet.generate_key().decode(),
+            'API_KEY': 'subscription-test',
+        }), patch('threading.Thread.start'):
+            import app
+        cls.panel = app
+        with cls.panel.app.app_context():
+            cls.addClassCleanup(db.engine.dispose)
+
+    def setUp(self):
+        self.context = self.panel.app.app_context()
+        self.context.push()
+        self.addCleanup(self.context.pop)
+        if inspect(db.engine).get_table_names():
+            self.fail('Subscription tests require an empty test database.')
+        db.create_all()
+        self.addCleanup(db.drop_all)
+        self.addCleanup(db.session.remove)
+        self.client = self.panel.app.test_client()
+        self.headers = {'X-API-KEY': 'subscription-test'}
+
+    def add_clients(self, count):
+        iface = InterfaceConfig(
+            name='test-awg', path='/tmp/test-awg.conf', address='10.1.0.1/24',
+            listen_port=51820, private_key='fixture',
+        )
+        for i in range(count):
+            peer = Peer(
+                name=f'Peer {i}', iface=iface, public_key=f'public-{i}',
+                private_key='fixture', address=f'10.1.0.{i + 2}/32', status='online',
+            )
+            sub = Subscription(name=f'Client {i}', token=f'token-{i}')
+            db.session.add(SubscriptionPeer(subscription=sub, peer=peer))
+        db.session.commit()
+        db.session.remove()
+
+    def test_list_is_batched_and_legacy_shape_is_preserved(self):
+        self.add_clients(20)
+        calls = []
+        engine = db.engine
+
+        def count_queries(conn, cursor, statement, *args):
+            calls.append(statement)
+
+        event.listen(engine, 'before_cursor_execute', count_queries)
+        self.addCleanup(event.remove, engine, 'before_cursor_execute', count_queries)
+        with patch.object(self.panel, '_expire') as expire, patch.object(
+            self.panel, '_wg_runtime_snapshot', return_value=({}, {}),
+        ) as snapshot, patch.object(self.panel, '_wg_transfer') as per_peer:
+            response = self.client.get('/api/subscriptions', headers=self.headers)
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(set(payload), {'subscriptions'})
+            self.assertEqual(len(payload['subscriptions']), 20)
+            self.assertLessEqual(len(calls), 4)
+            snapshot.assert_called_once()
+            expire.assert_not_called()
+            per_peer.assert_not_called()
+
+    def test_page_search_and_focus_keep_global_summary(self):
+        self.add_clients(12)
+        with patch.object(self.panel, '_wg_runtime_snapshot', return_value=({}, {})):
+            response = self.client.get(
+                '/api/subscriptions?page=1&per_page=5&focus=1&scope=local&status=ready',
+                headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload['pagination'], {'page': 3, 'per_page': 5, 'pages': 3, 'total': 12})
+            self.assertIn(1, [row['id'] for row in payload['subscriptions']])
+            response = self.client.get('/api/subscriptions?page=1&q=10.1.0.13', headers=self.headers)
+            payload = response.get_json()
+            self.assertEqual(payload['pagination']['total'], 1)
+            self.assertEqual(payload['summary']['total'], 12)
+            self.assertEqual(payload['subscriptions'][0]['name'], 'Client 11')
+
+    def test_one_sweep_updates_counters_first_use_and_shared_quota(self):
+        self.add_clients(2)
+        subs = Subscription.query.order_by(Subscription.id).all()
+        first_peer = subs[0].links[0].peer
+        subs[0].start_on_first_use = True
+        subs[0].time_limit_days = 1
+        subs[1].data_limit_value = 1
+        subs[1].data_limit_unit = 'Mi'
+        db.session.commit()
+
+        now = self.panel.now_ts()
+        keys = [('test-awg', 'public-0'), ('test-awg', 'public-1')]
+        with patch.object(self.panel, '_wg_runtime_snapshot', return_value=(
+            {keys[0]: (100, 200), keys[1]: (2**20, 0)}, {keys[0]: now},
+        )) as snapshot, patch.object(
+            self.panel, '_block_subscription_runtime', return_value=False,
+        ) as block:
+            self.panel._expire()
+        self.assertEqual(first_peer.used_bytes_total, 300)
+        self.assertEqual(self.panel.to_ts(subs[0].first_used_at), now)
+        self.assertEqual(self.panel.to_ts(subs[0].expires_at), now + 86400)
+        block.assert_called_once_with(subs[1], 'subscription_data_exhausted')
+        snapshot.assert_called_once()
+
+    def test_expired_subscription_is_blocked_without_live_counters(self):
+        self.add_clients(1)
+        sub = Subscription.query.one()
+        sub.created_at = self.panel.from_ts(self.panel.now_ts() - 2 * 86400)
+        sub.time_limit_days = 1
+        peer = sub.links[0].peer
+        peer.bytes_offset = 400
+        peer.used_bytes_total = 800
+        db.session.commit()
+
+        with patch.object(self.panel, '_wg_runtime_snapshot', return_value=({}, {})), patch.object(
+            self.panel, '_block_subscription_runtime', return_value=False,
+        ) as block:
+            self.panel._expire()
+        block.assert_called_once_with(sub, 'subscription_expired')
+        self.assertEqual((peer.bytes_offset, peer.used_bytes_total), (400, 800))
+
+    def test_https_html_keeps_upgrade_policy_without_obsolete_directive(self):
+        response = self.client.get('/login', base_url='https://localhost')
+        self.assertIn('upgrade-insecure-requests', response.headers['Content-Security-Policy'])
+        self.assertNotIn('block-all-mixed-content', response.headers['Content-Security-Policy'])
+
+    def test_config_download_checks_live_quota_before_next_sweep(self):
+        self.add_clients(1)
+        sub = Subscription.query.one()
+        sub.data_limit_value = 1
+        sub.data_limit_unit = 'Mi'
+        db.session.commit()
+        with patch.object(self.panel, '_wg_runtime_snapshot', return_value=(
+            {('test-awg', 'public-0'): (2**20, 0)}, {},
+        )):
+            response = self.client.get('/s/token-0/config')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()['reason'], 'data_exhausted')
+        self.assertEqual(sub.links[0].peer.used_bytes_total, 0)
+
+    def test_expiry_lock_prevents_two_sweeps_in_same_interval(self):
+        self.lock.unlink(missing_ok=True)
+        with patch.object(self.panel, '_EXPIRY_LOCK_PATH', self.lock), patch.object(
+            self.panel, '_expire',
+        ) as sweep:
+            self.panel._run_expiry_once()
+            self.panel._run_expiry_once()
+        sweep.assert_called_once()
+
+
+if __name__ == '__main__':
+    unittest.main()

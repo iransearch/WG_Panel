@@ -76,7 +76,7 @@
     />
 
     {% block preload_flags %}{% endblock %} {% if not preview|default(false) %}
-    {% if use_poppins_regular|default(true) %}
+    {% if use_poppins_regular|default(false) %}
     <link
       rel="preload"
       href="{{ url_for('static', filename='fonts/Poppins-Regular.woff2') }}"
@@ -100,7 +100,7 @@
       type="font/woff2"
       crossorigin
     />
-    {% endif %} {% if use_fa_solid|default(true) %}
+    {% endif %} {% if use_fa_solid|default(false) %}
     <link
       rel="preload"
       href="{{ url_for('static', filename='vendor/fa/webfonts/fa-solid-900.woff2') }}"
@@ -108,7 +108,7 @@
       type="font/woff2"
       crossorigin
     />
-    {% endif %} {% if use_fa_brands|default(true) %}
+    {% endif %} {% if use_fa_brands|default(false) %}
     <link
       rel="preload"
       href="{{ url_for('static', filename='vendor/fa/webfonts/fa-brands-400.woff2') }}"

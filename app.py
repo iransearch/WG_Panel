@@ -49,6 +49,7 @@ from panel_core import node_client as _node_client
 from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
 from sqlalchemy import or_, and_, text, inspect, func, event
+from sqlalchemy.orm import joinedload, selectinload
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from urllib.parse import urlparse, urljoin
 import secrets
@@ -550,7 +551,7 @@ def inject_sec_headers(resp):
         if _is_https():
             ct = (resp.headers.get("Content-Type") or "").lower()
             if "text/html" in ct:
-                add = "upgrade-insecure-requests; block-all-mixed-content"
+                add = "upgrade-insecure-requests"
                 cur = (resp.headers.get("Content-Security-Policy") or "").strip()
                 if cur:
                     if "upgrade-insecure-requests" not in cur:
@@ -11583,13 +11584,7 @@ def preview_template(name):
 @app.route('/api/u/<token>')
 def user_peer(token):
     p = _peer_from_shortlink_token(token)
-    _expire()
 
-    total = _wg_transfer(p)
-    used_total, _delta, usage_changed = _accumulate_peer_usage(p, total)
-    if usage_changed:
-        db.session.commit()
-    used_live = 0
     exp_ts = _effective_expiry_ts(p)
     ttl_seconds = max(0, exp_ts - now_ts()) if exp_ts else None
     used_db = int(getattr(p, 'used_bytes_total', 0) or 0)
@@ -14266,22 +14261,19 @@ def _expire():
 
     # Queue Telegram messages commit succeeds
     pending_notifications = []
-    subscription_by_peer = {}
-    subscriptions_by_id = {}
-    try:
-        for link in SubscriptionPeer.query.all():
-            sub = getattr(link, 'subscription', None)
-            if sub is None:
-                sub = db.session.get(Subscription, link.subscription_id)
-            if sub is None:
-                continue
-            subscription_by_peer[int(link.peer_id)] = sub
-            subscriptions_by_id[int(sub.id)] = sub
-    except Exception:
-        current_app.logger.exception('Could not build subscription lifecycle map')
-
+    subscriptions = _subscription_list_query().filter(Subscription.links.any()).all()
+    subscription_by_peer = {
+        link.peer_id: sub for sub in subscriptions for link in sub.links
+    }
+    peers = Peer.query.options(joinedload(Peer.iface).joinedload(InterfaceConfig.node)).all()
+    transfers, handshakes = _wg_runtime_snapshot(
+        peer.iface.name for peer in peers if peer.iface and not _iface_is_node(peer.iface)
+    )
     node_snapshots = {}
-    for peer in Peer.query.all():
+    for peer in peers:
+        if not peer.iface:
+            continue
+        runtime_key = (peer.iface.name, peer.public_key)
         node_id = _node_id_from_iface(peer.iface) if peer.iface else None
         runtime = None
         if node_id is not None:
@@ -14300,7 +14292,7 @@ def _expire():
                 None,
             )
         ):
-            hs = _latest_handshake(peer) if node_id is None else int((runtime or {}).get('latest_handshake') or 0)
+            hs = handshakes.get(runtime_key, 0) if node_id is None else int((runtime or {}).get('latest_handshake') or 0)
 
             if hs and hs > 0:
                 peer.first_used_at = from_ts(hs)
@@ -14382,7 +14374,8 @@ def _expire():
 
         interface = peer.iface
         is_node = node_id is not None
-        total_bytes = _wg_transfer(peer) if not is_node else _node_row_total_bytes(runtime)
+        counters = transfers.get(runtime_key)
+        total_bytes = _node_row_total_bytes(runtime) if is_node else (sum(counters) if counters is not None else None)
         if total_bytes is None:
             used_effective = int(peer.used_bytes_total or 0)
         else:
@@ -14504,17 +14497,6 @@ def _expire():
             and peer.status != 'blocked'
             and used_effective >= limit_bytes
         ):
-            if not is_node:
-                if total_bytes is None:
-                    total_bytes = _wg_transfer(
-                        peer
-                    )
-
-                _accumulate_peer_usage(
-                    peer,
-                    total_bytes,
-                )
-
             disabled = _disable_peer(
                 peer,
                 'limit_reached',
@@ -14590,7 +14572,7 @@ def _expire():
                 'dedupe_seconds': 0,})
             changed = True
 
-    for sub in subscriptions_by_id.values():
+    for sub in subscriptions:
         try:
             before = (
                 to_ts(getattr(sub, 'first_used_at', None)),
@@ -14607,6 +14589,15 @@ def _expire():
                     if getattr(link, 'peer', None) is not None
                 ),
             )
+            used = _stored_subscription_usage(sub)
+            if not sub.first_used_at:
+                first_connections = [
+                    link.peer.first_used_at for link in sub.links if link.peer and link.peer.first_used_at
+                ]
+                if first_connections:
+                    sub.first_used_at = min(first_connections)
+                elif used > 0:
+                    sub.first_used_at = from_ts(now)
             _apply_subscription_timer(sub)
             _sync_all_subscription_peers(sub, rename=False)
             after = (
@@ -14626,7 +14617,6 @@ def _expire():
             )
             if before != after:
                 changed = True
-            used = int(_sub_used_bytes(sub) or 0)
             access = subscription_access(sub, used_bytes=used)
             if not access.get('allowed'):
                 if _block_subscription_runtime(
@@ -14691,8 +14681,7 @@ def _expire():
             )
 
 _EXPIRY_THREAD_STARTED = False
-_EXPIRY_LOCK = threading.Lock()
-_EXPIRY_LAST_TS = 0.0
+_EXPIRY_LOCK_PATH = Path(INSTANCE_DIR) / 'expiry-enforcer.lock'
 
 try:
     _EXPIRY_INTERVAL_SEC = max(5, int(os.getenv('WG_EXPIRY_INTERVAL_SEC', '15')))
@@ -14700,88 +14689,50 @@ except Exception:
     _EXPIRY_INTERVAL_SEC = 15
 
 
-def _run_expiry_once(source: str = 'manual') -> bool:
-    """Run peer expiry/limit enforcement once, safely and non-overlapping."""
-    if not _EXPIRY_LOCK.acquire(blocking=False):
-        return False
-
-    try:
-        _expire()
-        return True
-
-    except Exception as exc:
+def _run_expiry_once():
+    """Run at most one enforcement sweep per interval across panel workers."""
+    with _EXPIRY_LOCK_PATH.open('a+', encoding='ascii') as lock:
         try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        lock.seek(0)
+        try:
+            last_run = float(lock.read().strip())
+        except ValueError:
+            last_run = -1
+        now = time.monotonic()
+        if 0 <= last_run <= now and now - last_run < _EXPIRY_INTERVAL_SEC:
+            return
+        try:
+            _expire()
+        except Exception:
             db.session.rollback()
-        except Exception:
-            pass
-
-        try:
-            current_app.logger.exception(
-                'Expiry enforcement failed (%s): %s',
-                source,
-                exc
-            )
-        except Exception:
-            pass
-
-        return False
-
-    finally:
-        try:
-            _EXPIRY_LOCK.release()
-        except Exception:
-            pass
+            current_app.logger.exception('Expiry enforcement failed')
+        finally:
+            lock.seek(0)
+            lock.truncate()
+            lock.write(str(time.monotonic()))
+            lock.flush()
 
 
 def _expiry_enforcer_loop():
     while True:
         try:
             with app.app_context():
-                _run_expiry_once('background')
+                _run_expiry_once()
         except Exception:
-            pass
-
+            app.logger.exception('Could not schedule expiry enforcement')
         time.sleep(_EXPIRY_INTERVAL_SEC)
 
 
 def _start_expiry_enforcer():
-    """Start background expiry enforcement once per process/worker."""
     global _EXPIRY_THREAD_STARTED
-
     if _EXPIRY_THREAD_STARTED:
         return
-
     _EXPIRY_THREAD_STARTED = True
+    threading.Thread(target=_expiry_enforcer_loop, name='peer-expiry-enforcer', daemon=True).start()
 
-    t = threading.Thread(
-        target=_expiry_enforcer_loop,
-        name='peer-expiry-enforcer',
-        daemon=True,
-    )
-    t.start()
-
-
-@app.before_request
-def _expiry_tick_on_requests():
-    """
-    Fallback : any panel/API activity can enforce expiry,
-    not only the Peers tab.
-    """
-    global _EXPIRY_LAST_TS
-
-    try:
-        if (request.path or '').startswith('/static/'):
-            return
-
-        now = time.time()
-        if (now - _EXPIRY_LAST_TS) < _EXPIRY_INTERVAL_SEC:
-            return
-
-        _EXPIRY_LAST_TS = now
-        _run_expiry_once('request')
-
-    except Exception:
-        pass
 
 @app.post('/api/peer/<int:pid>/clear_total')
 @login_required
@@ -15150,8 +15101,6 @@ def bootstrap():
 
 
         _on_boot()
-        _run_expiry_once('boot')
-        _start_expiry_enforcer()
         repoint_endpoints()
         try:
             _clear_retention()
@@ -17477,10 +17426,6 @@ def node_peers(nid):
     if request.method == 'GET':
         iface = (request.args.get('iface') or '').strip()
         iface_id = (request.args.get('iface_id') or '').strip()
-        try:
-            _expire()
-        except Exception:
-            pass
         if not iface and iface_id:
             parts = iface_id.split(':', 1)
             if len(parts) == 2:
@@ -17518,7 +17463,7 @@ def node_peers(nid):
                 InterfaceConfig.node_id == nid
             ))
 
-        out, dirty = [], False
+        out = []
         for p in q.all():
             r = runtime.get(p.public_key)
             rs = ((r or {}).get('conn_status') or (r or {}).get('connection_status') or (r or {}).get('status') or '').strip()
@@ -17537,45 +17482,10 @@ def node_peers(nid):
                 except Exception:
                     tx_mib = 0.0
 
-                live_total = _node_row_total_bytes(r)
-                used_total, _delta, usage_changed = _accumulate_peer_usage(p, live_total or 0)
-                if usage_changed:
-                    dirty = True
-                used_live = used_total
             else:
                 rx_mib = 0.0
                 tx_mib = 0.0
-                live_total = int(getattr(p, 'bytes_offset', 0) or 0)
-                used_live = int(getattr(p, 'used_bytes_total', 0) or 0)
-
-            if not getattr(p, 'first_used_at', None):
-
-                try:
-                    handshake_ts = int((r or {}).get('latest_handshake')or 0)
-                except Exception:
-                    handshake_ts = 0
-
-                if handshake_ts > 0:
-                    p.first_used_at = from_ts(
-                        handshake_ts
-                    )
-                    p.timer_started_at = from_ts(handshake_ts)
-
-                    if (
-                        getattr(p,'start_on_first_use',False,)
-                        and getattr(p,'time_limit_days',None,)
-                        and not getattr(p,'unlimited',False,)):
-                        p.expires_at = from_ts(
-                            add_days_ts(
-                                handshake_ts,
-                                float(
-                                    p.time_limit_days
-                                ),
-                            )
-                        )
-
-                    dirty = True
-
+            used_live = int(p.used_bytes_total or 0)
 
             exp_ts      = _effective_expiry_ts(p)
             ttl_seconds = max(0, exp_ts - now_ts()) if exp_ts else None
@@ -17638,12 +17548,6 @@ def node_peers(nid):
                 'telegram_id': getattr(p, 'telegram_id', '') or '',
                 'public_key': p.public_key,
             })
-
-        if dirty:
-            try:
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
 
         return jsonify(peers=out), 200
 
@@ -20141,13 +20045,6 @@ def peers_create():
 def panel_peers():
 
     try:
-        _expire()
-    except Exception:
-        current_app.logger.exception(
-            "Peer expiration processing failed during refresh"
-        )
-
-    try:
         server_public_ip = _public_ipv4()
     except Exception:
         server_public_ip = ''
@@ -20164,7 +20061,7 @@ def panel_peers():
     ).strip()
 
     try:
-        query = Peer.query
+        query = Peer.query.options(joinedload(Peer.iface))
 
         if interface_id is not None:
             query = query.filter(
@@ -20199,6 +20096,7 @@ def panel_peers():
         if peer_ids:
             links = (
                 SubscriptionPeer.query
+                .options(joinedload(SubscriptionPeer.subscription).selectinload(Subscription.links).joinedload(SubscriptionPeer.peer))
                 .filter(SubscriptionPeer.peer_id.in_(peer_ids))
                 .all()
             )
@@ -20212,7 +20110,7 @@ def panel_peers():
                 sid = int(sub.id)
                 if sid not in subscription_cache:
                     try:
-                        shared_used = int(_sub_used_bytes(sub) or 0)
+                        shared_used = int(_stored_subscription_usage(sub) or 0)
                     except Exception:
                         current_app.logger.exception(
                             "Failed to aggregate subscription usage for peer list: subscription=%s",
@@ -20244,7 +20142,6 @@ def panel_peers():
         ]
     )
 
-    usage_dirty = False
     current_timestamp = now_ts()
 
     for peer in peers:
@@ -20289,17 +20186,7 @@ def panel_peers():
 
             live_total = rx_bytes + tx_bytes
 
-            (
-                used_bytes,
-                _new_usage,
-                usage_changed,
-            ) = _accumulate_peer_usage(
-                peer,
-                live_total=live_total,
-            )
-
-            if usage_changed:
-                usage_dirty = True
+            used_bytes = int(peer.used_bytes_total or 0)
 
             connection = _peer_conn_status(
                 peer,
@@ -20547,17 +20434,6 @@ def panel_peers():
             current_app.logger.exception(
                 "Failed to serialize peer %s",
                 getattr(peer, 'id', '?'),
-            )
-
-    if usage_dirty:
-        try:
-            db.session.commit()
-
-        except Exception:
-            db.session.rollback()
-
-            current_app.logger.exception(
-                "Failed to persist peer usage after refresh"
             )
 
     return jsonify(
@@ -26320,12 +26196,21 @@ def _subscription_peer_runtime(peer):
 
     return result
 
-def _subscription_row(sub):
+def _stored_subscription_usage(sub):
+    return sum(int(link.peer.used_bytes_total or 0) for link in sub.links if link.peer)
 
-    used = int(
-        _sub_used_bytes(sub)
-        or 0
+
+def _subscription_list_query():
+    return Subscription.query.options(
+        selectinload(Subscription.links)
+        .joinedload(SubscriptionPeer.peer)
+        .joinedload(Peer.iface)
+        .joinedload(InterfaceConfig.node)
     )
+
+
+def _subscription_row(sub, *, read_only=False):
+    used = _stored_subscription_usage(sub) if read_only else _sub_used_bytes(sub)
 
     unlimited = bool(
         getattr(
@@ -26335,105 +26220,106 @@ def _subscription_row(sub):
         )
     )
 
-    subscription_changed = False
-    linked_first_use = []
+    if not read_only:
+        subscription_changed = False
+        linked_first_use = []
 
-    for link in (
-        getattr(
+        for link in (
+            getattr(
+                sub,
+                'links',
+                [],
+            )
+            or []
+        ):
+            peer = getattr(
+                link,
+                'peer',
+                None,
+            )
+
+            if not peer:
+                continue
+
+            peer_first_used = getattr(
+                peer,
+                'first_used_at',
+                None,
+            )
+
+            if peer_first_used:
+                linked_first_use.append(
+                    peer_first_used
+                )
+
+        current_first_used = getattr(
             sub,
-            'links',
-            [],
-        )
-        or []
-    ):
-        peer = getattr(
-            link,
-            'peer',
-            None,
-        )
-
-        if not peer:
-            continue
-
-        peer_first_used = getattr(
-            peer,
             'first_used_at',
             None,
         )
 
-        if peer_first_used:
-            linked_first_use.append(
-                peer_first_used
+        if (
+            not current_first_used
+            and linked_first_use
+        ):
+            sub.first_used_at = min(
+                linked_first_use
             )
 
-    current_first_used = getattr(
-        sub,
-        'first_used_at',
-        None,
-    )
+            current_first_used = (
+                sub.first_used_at
+            )
 
-    if (
-        not current_first_used
-        and linked_first_use
-    ):
-        sub.first_used_at = min(
-            linked_first_use
-        )
+            subscription_changed = True
 
-        current_first_used = (
-            sub.first_used_at
-        )
+        if (
+            not current_first_used
+            and used > 0
+        ):
+            sub.first_used_at = from_ts(
+                now_ts()
+            )
 
-        subscription_changed = True
+            current_first_used = (
+                sub.first_used_at
+            )
 
-    if (
-        not current_first_used
-        and used > 0
-    ):
-        sub.first_used_at = from_ts(
-            now_ts()
-        )
+            subscription_changed = True
 
-        current_first_used = (
-            sub.first_used_at
-        )
+        if subscription_changed:
+            if unlimited:
+                try:
+                    _clear_timer_cycle(sub)
+                except Exception:
+                    pass
 
-        subscription_changed = True
+            else:
+                _apply_subscription_timer(
+                    sub
+                )
 
-    if subscription_changed:
-        if unlimited:
+            _sync_all_subscription_peers(
+                sub,
+                rename=False,
+            )
+
             try:
-                _clear_timer_cycle(sub)
+                db.session.commit()
+
             except Exception:
-                pass
+                db.session.rollback()
 
-        else:
-            _apply_subscription_timer(
-                sub
-            )
-
-        _sync_all_subscription_peers(
-            sub,
-            rename=False,
-        )
-
-        try:
-            db.session.commit()
-
-        except Exception:
-            db.session.rollback()
-
-            current_app.logger.exception(
-                (
-                    'Failed to save subscription first-use date '
-                    'for subscription_id=%s'
-                ),
-                getattr(
-                    sub,
-                    'id',
-                    '?',
-                ),
-            )
+                current_app.logger.exception(
+                    (
+                        'Failed to save subscription first-use date '
+                        'for subscription_id=%s'
+                    ),
+                    getattr(
+                        sub,
+                        'id',
+                        '?',
+                    ),
+                )
 
     limit = _sub_limit_bytes(
         sub
@@ -26450,7 +26336,7 @@ def _subscription_row(sub):
 
     access = subscription_access(sub, used_bytes=used)
 
-    if not access.get('allowed'):
+    if not read_only and not access.get('allowed'):
         _block_subscription_runtime(
             sub,
             'subscription_' + str(access.get('reason') or 'blocked'),
@@ -28583,13 +28469,121 @@ def api_subscriptions_inbounds_catalog():
         })
     return jsonify(inbounds=inbounds)
 
+def _subscription_page():
+    """Load summary/search fields in one query and hydrate only visible cards."""
+    from itertools import groupby
+
+    request_page = max(1, request.args.get('page', 1, type=int))
+    per_page = min(50, max(1, request.args.get('per_page', 8, type=int)))
+    focus = request.args.get('focus', type=int)
+    search = request.args.get('q', '').strip().lower()
+    status_filter = request.args.get('status', 'all')
+    scope_filter = request.args.get('scope', 'all')
+    now = now_ts()
+    summary = dict.fromkeys((
+        'total', 'inbounds', 'blocked', 'enabled', 'disabled', 'unassigned',
+        'used', 'restricted', 'expired', 'exhausted',
+    ), 0)
+    matches = []
+
+    overview = (
+        db.session.query(
+            Subscription, Peer.id.label('peer_id'), Peer.status, Peer.used_bytes_total,
+            Peer.name.label('peer_name'), Peer.address, Peer.endpoint,
+            InterfaceConfig.name.label('interface_name'), InterfaceConfig.node_id,
+            Node.name.label('node_name'), SubscriptionPeer.location_label,
+        )
+        .outerjoin(SubscriptionPeer, SubscriptionPeer.subscription_id == Subscription.id)
+        .outerjoin(Peer, Peer.id == SubscriptionPeer.peer_id)
+        .outerjoin(InterfaceConfig, InterfaceConfig.id == Peer.iface_id)
+        .outerjoin(Node, Node.id == InterfaceConfig.node_id)
+        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
+        .yield_per(500)
+    )
+    for sub, entries in groupby(overview, key=lambda entry: entry[0]):
+        links = [entry for entry in entries if entry.peer_id is not None]
+        used = sum(int(link.used_bytes_total or 0) for link in links)
+        limit = _sub_limit_bytes(sub)
+        expiry = _effective_expiry_ts(sub)
+        access = compute_subscription_access(
+            enabled=sub.enabled, unlimited=sub.unlimited, expires_at_ts=expiry,
+            now_ts=now, limit_bytes=limit, used_bytes=used,
+        )
+        reason = access['reason']
+        peer_states = {(link.status or 'offline').lower() for link in links}
+        if reason == 'disabled':
+            status = 'disabled'
+        elif reason or 'blocked' in peer_states:
+            status = 'blocked'
+        elif peer_states - {'online'}:
+            status = 'disabled'
+        else:
+            status = 'ready' if links else 'empty'
+
+        summary['total'] += 1
+        summary['inbounds'] += len(links)
+        summary['blocked'] += status == 'blocked'
+        summary['enabled'] += bool(sub.enabled) and access['allowed']
+        summary['disabled'] += not sub.enabled
+        summary['unassigned'] += not links
+        summary['used'] += max(0, used)
+        summary['restricted'] += not access['allowed']
+        summary['expired'] += reason == 'expired'
+        summary['exhausted'] += reason == 'data_exhausted'
+
+        low_data = bool(limit and round(used / limit * 100, 2) >= 79.5)
+        expiring = bool(expiry and 0 < expiry - now <= 3 * 86400)
+        if status_filter in ('ready', 'blocked', 'disabled') and status != status_filter:
+            continue
+        if (status_filter == 'empty' and links
+                or status_filter == 'low-data' and not low_data
+                or status_filter == 'expiring' and not expiring):
+            continue
+
+        scopes = set()
+        terms = [sub.name, sub.note, sub.phone_number, sub.telegram_id]
+        for link in links:
+            name = link.interface_name or ''
+            legacy_node = name.startswith('n') and ':' in name
+            scope = 'node' if link.node_id is not None or legacy_node else 'local'
+            scopes.add(scope)
+            terms.extend((
+                link.peer_name, name.split(':', 1)[-1] if legacy_node else name,
+                link.address, link.endpoint, link.location_label, link.node_name,
+                scope, link.status or 'offline',
+            ))
+        if scope_filter != 'all' and (
+            (scope_filter == 'mixed' and len(scopes) != 2)
+            or (scope_filter != 'mixed' and scope_filter not in scopes)
+        ):
+            continue
+        if search and search not in ' '.join(str(term or '').lower() for term in terms):
+            continue
+        matches.append(sub.id)
+
+    total = len(matches)
+    pages = max(1, (total + per_page - 1) // per_page)
+    if focus in matches:
+        request_page = matches.index(focus) // per_page + 1
+    page = min(request_page, pages)
+    visible = matches[(page - 1) * per_page:page * per_page]
+    rows = _subscription_list_query().filter(Subscription.id.in_(visible)).all() if visible else []
+    by_id = {sub.id: sub for sub in rows}
+    return {
+        'subscriptions': [_subscription_row(by_id[sid], read_only=True) for sid in visible if sid in by_id],
+        'pagination': {'page': page, 'per_page': per_page, 'pages': pages, 'total': total},
+        'summary': summary,
+    }
+
+
 @app.route('/api/subscriptions', methods=['GET', 'POST'])
 @require_api_key_or_login
 def api_subscriptions():
     if request.method == 'GET':
-        rows = Subscription.query.order_by(Subscription.created_at.desc()).all()
-        db.session.commit()
-        return jsonify(subscriptions=[_subscription_row(s) for s in rows])
+        if 'page' in request.args:
+            return jsonify(_subscription_page())
+        rows = _subscription_list_query().order_by(Subscription.created_at.desc(), Subscription.id.desc()).all()
+        return jsonify(subscriptions=[_subscription_row(sub, read_only=True) for sub in rows])
     data = request.get_json(silent=True) or {}
     created_ts = now_ts()
     sub = Subscription(
@@ -28667,8 +28661,8 @@ def api_subscriptions():
 @app.get('/api/subscriptions/<int:sid>')
 @require_api_key_or_login
 def api_subscription_get(sid):
-    sub = db.session.get(Subscription, sid) or abort(404)
-    return jsonify(subscription=_subscription_row(sub))
+    sub = _subscription_list_query().filter(Subscription.id == sid).first_or_404()
+    return jsonify(subscription=_subscription_row(sub, read_only=True))
 
 @app.put('/api/subscriptions/<int:sid>')
 @require_api_key_or_login
@@ -29400,28 +29394,6 @@ def _lookup_geo(host: str) -> dict:
     return {'country': '', 'country_code': '', 'flag': '🌐', 'ts': now}
 
 
-def _peer_used_for_subscription(peer) -> int:
-    try:
-        iface = getattr(peer, 'iface', None)
-        is_node = bool(
-            iface and (
-                getattr(iface, 'node_id', None) is not None or
-                re.match(r'^n\d+:', getattr(iface, 'name', '') or '')
-            )
-        )
-
-        if is_node:
-            return int(getattr(peer, 'used_bytes_total', 0) or 0)
-
-        total = _wg_transfer(peer)
-        used, _delta, changed = _accumulate_peer_usage(peer, total)
-        if changed:
-            db.session.commit()
-        return int(used)
-
-    except Exception:
-        return int(getattr(peer, 'used_bytes_total', 0) or 0)
-
 def subscription_access(sub, used_bytes=None) -> dict:
     """Return the canonical lifecycle/access decision for a subscription.
 
@@ -29457,7 +29429,19 @@ def _subscription_inbound_state(sub):
 
 def _subscription_access_or_403(sub):
     """Return a 403 response when access is revoked, otherwise ``None``."""
-    access = subscription_access(sub)
+    # Downloads still check live local usage so the collection interval
+    # cannot let an exhausted subscription download a config.
+    peers = [link.peer for link in sub.links if link.peer]
+    local_peers = [peer for peer in peers if peer.iface and not _iface_is_node(peer.iface)]
+    transfers, _ = _wg_runtime_snapshot(peer.iface.name for peer in local_peers)
+    used = _stored_subscription_usage(sub)
+    for peer in local_peers:
+        counters = transfers.get((peer.iface.name, peer.public_key))
+        if counters is not None:
+            live = max(0, sum(counters))
+            offset = max(0, int(peer.bytes_offset or 0))
+            used += live - offset if live >= offset else live
+    access = subscription_access(sub, used_bytes=used)
     if access['allowed']:
         return None
 
@@ -29470,11 +29454,6 @@ def _subscription_access_or_403(sub):
 
 
 def _subscription_public_payload(sub) -> dict:
-    try:
-        _expire()
-    except Exception:
-        pass
-
     links = sorted(list(getattr(sub, 'links', []) or []), key=lambda x: (x.sort_order or 0, x.id or 0))
     limit_bytes = sub.limit_bytes() if hasattr(sub, 'limit_bytes') else None
     used_bytes = 0
@@ -29485,7 +29464,7 @@ def _subscription_public_payload(sub) -> dict:
         peer = getattr(link, 'peer', None)
         if not peer:
             continue
-        used_bytes += _peer_used_for_subscription(peer)
+        used_bytes += int(peer.used_bytes_total or 0)
 
     access = subscription_access(sub, used_bytes=used_bytes)
     access.update(_subscription_inbound_state(sub))
@@ -30046,7 +30025,8 @@ def subscription_public_inbound_geo(token, link_id):
     )
 
 _start_retention()
-_start_expiry_enforcer()
+if __name__ != '__main__':
+    _start_expiry_enforcer()
 _start_backup_scheduler()
 _node_notify_monitor()
 # ========================================
@@ -31890,6 +31870,7 @@ if __name__ == "__main__":
     if not use_gunicorn:
         if app.config["SQLALCHEMY_DATABASE_URI"].get_backend_name() == "postgresql":
             bootstrap()
+        _start_expiry_enforcer()
         ssl_ctx = (cert_path, key_path) if tls_enabled else None
 
         if tls_enabled:
@@ -32020,6 +32001,10 @@ if __name__ == "__main__":
             engine.dispose(close=False)
 
         options["post_fork"] = reset_database_pool
+    def start_expiry_worker(worker):
+        _start_expiry_enforcer()
+
+    options['post_worker_init'] = start_expiry_worker
     _Guni(app, options).run()
 
 
