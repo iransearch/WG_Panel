@@ -73,8 +73,6 @@
   });
   if (document.readyState === 'complete') startCharts();
   else window.addEventListener('load', startCharts, {once: true});
-  Promise.resolve(window.WG_PANEL_TIMEZONE_READY).finally(() => {
-    refreshStats();
-    refreshDetails();
-  });
+  refreshStats();
+  refreshDetails();
 })();

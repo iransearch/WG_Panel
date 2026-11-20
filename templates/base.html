@@ -196,21 +196,7 @@
     <script defer src="{{ url_for('static', filename='js/csrf.js') }}"></script>
     <script>
       window.WG_PANEL_TIMEZONE = {{ PANEL_TIMEZONE|default('UTC', true)|tojson }};
-      window.WG_PANEL_TIMEZONE_READY = fetch(
-        {{ url_for('api_timezone')|tojson }} + '?_=' + Date.now(),
-        { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } }
-      ).then(function (response) {
-        if (!response.ok) throw new Error('timezone endpoint returned ' + response.status);
-        return response.json();
-      }).then(function (payload) {
-        var timezone = String((payload && payload.timezone) || '').trim();
-        if (!timezone) throw new Error('timezone endpoint returned an empty timezone');
-        new Intl.DateTimeFormat('en', { timeZone: timezone }).format(new Date());
-        window.WG_PANEL_TIMEZONE = timezone;
-        return timezone;
-      }).catch(function () {
-        return window.WG_PANEL_TIMEZONE || 'UTC';
-      });
+      window.WG_PANEL_TIMEZONE_READY = Promise.resolve(window.WG_PANEL_TIMEZONE);
     </script>
     <script defer src="{{ url_for('static', filename='js/base.js') }}"></script>
     <link
@@ -673,7 +659,7 @@
 
     <script
       defer
-      src="{{ url_for('static', filename='js/panel-version.js') }}"
+      src="{{ url_for('static', filename='js/panel-version.js', v='startup-1') }}"
     ></script>
     <script
       defer

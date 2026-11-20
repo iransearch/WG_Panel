@@ -2447,14 +2447,12 @@ if(subFixedClientInfo){
 }
 syncSubscriptionFixedClientInfo();
 
-loadSubs({force:true});
-async function scheduleSubscriptionRefresh(){
+async function scheduleSubscriptionRefresh(force=false){
  clearTimeout(SUBS_LIVE_TIMER);
- await loadSubs({force:false});
+ await loadSubs({force});
  clearTimeout(SUBS_LIVE_TIMER);
  if(!document.hidden) SUBS_LIVE_TIMER = setTimeout(scheduleSubscriptionRefresh, SUBS_REFRESH_MS * Math.pow(2, SUBS_FAILURES));
 }
-SUBS_LIVE_TIMER = setTimeout(scheduleSubscriptionRefresh, SUBS_REFRESH_MS);
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) scheduleSubscriptionRefresh(); else clearTimeout(SUBS_LIVE_TIMER); });
 
 function subxDisplayMode(){ return (SUB_SETTINGS && SUB_SETTINGS.display_mode) || localStorage.getItem('subx-display-mode') || 'hybrid'; }
@@ -2551,7 +2549,6 @@ function updateLayoutPreview(layout){
 }
 ['portal-label','portal-title','portal-subtitle','portal-icon','portal-animation'].forEach(id=>document.getElementById(id)?.addEventListener('input',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
 document.querySelectorAll('input[name="sub-display-mode"]').forEach(r=>r.addEventListener('change',()=>updateLayoutPreview(document.querySelector('input[name="sub-layout"]:checked')?.value||'aurora')));
-try { setTimeout(() => loadSubs({force:true}), 0); } catch(_) {}
 
 const SUBX_LIST = {
   q: '',
@@ -2886,7 +2883,6 @@ function renderSubscriptions(){
 }
 
 async function loadSubs(opts={}){
-  try { await (window.WG_PANEL_TIMEZONE_READY || Promise.resolve()); } catch (_) {}
   if(SUBS_LOADING){
     if(opts.force) SUBS_RELOAD_PENDING = true;
     return;
@@ -2956,7 +2952,7 @@ async function loadSubs(opts={}){
   }
 }
 
-setTimeout(()=>renderSubscriptions(), 0);
+queueMicrotask(() => scheduleSubscriptionRefresh(true));
 
 window.addEventListener('wgpanel:timezone-change',()=>{
   SUBS_LAST_JSON='';

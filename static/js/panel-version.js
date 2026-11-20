@@ -245,7 +245,20 @@
     }
   }
 
-  async function refreshSidebarVersion() {
+  const pendingVersionRequests = new Map();
+
+  function checkVersion(fresh) {
+    if (!pendingVersionRequests.has(fresh)) {
+      const endpoint = fresh ? '/api/panel/version?fresh=1' : '/api/panel/version';
+      const request = fetchJson(endpoint).finally(() => {
+        pendingVersionRequests.delete(fresh);
+      });
+      pendingVersionRequests.set(fresh, request);
+    }
+    return pendingVersionRequests.get(fresh);
+  }
+
+  async function refreshSidebarVersion(fresh = true) {
     const stateElement = byId(
       'sb2-version-state'
     );
@@ -274,9 +287,7 @@
     }
 
     try {
-      const payload = await fetchJson(
-        `/api/panel/version?fresh=1&_=${Date.now()}`,
-      );
+      const payload = await checkVersion(fresh);
 
       render(payload);
 
@@ -288,18 +299,6 @@
   window.refreshPanelVersionBadge = (
     refreshSidebarVersion
   );
-
-  if (document.readyState === 'loading') {
-    document.addEventListener(
-      'DOMContentLoaded',
-      refreshSidebarVersion,
-      {
-        once: true,
-      },
-    );
-  } else {
-    refreshSidebarVersion();
-  }
 
   window.addEventListener(
     'wg-panel-update-finished',
@@ -412,7 +411,7 @@
     }
   }
 
-  async function refreshDashboardVersion() {
+  async function refreshDashboardVersion(fresh = true) {
     const card = byId('panel-version-card');
     if (!card) return;
 
@@ -441,9 +440,7 @@
     }
 
     try {
-      const payload = await fetchJson(
-        `/api/panel/version?fresh=1&_=${Date.now()}`,
-      );
+      const payload = await checkVersion(fresh);
 
       renderDashboardVersion(payload);
     } catch (error) {
@@ -462,19 +459,18 @@
   if (dashboardRefreshButton) {
     dashboardRefreshButton.addEventListener(
       'click',
-      refreshDashboardVersion,
+      () => refreshDashboardVersion(),
     );
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener(
-      'DOMContentLoaded',
-      refreshDashboardVersion,
-      { once: true },
-    );
-  } else {
-    refreshDashboardVersion();
+  function scheduleVersionCheck() {
+    window.setTimeout(() => {
+      refreshSidebarVersion(false);
+      refreshDashboardVersion(false);
+    }, 2500);
   }
+  if (document.readyState === 'complete') scheduleVersionCheck();
+  else window.addEventListener('load', scheduleVersionCheck, { once: true });
 
   window.addEventListener(
     'wg-panel-update-finished',
