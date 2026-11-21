@@ -1,5 +1,6 @@
 .nodes-page,
 .nodes-modal,
+.nodes-provision-dialog,
 .nodes-confirm {
   --n-bg:#f4f7fb;
   --n-surface:#ffffff;
@@ -32,6 +33,9 @@ body.dark .nodes-page,
 :root.dark .nodes-modal,
 :root[data-theme="dark"] .nodes-modal,
 body.dark .nodes-modal,
+:root.dark .nodes-provision-dialog,
+:root[data-theme="dark"] .nodes-provision-dialog,
+body.dark .nodes-provision-dialog,
 :root.dark .nodes-confirm,
 :root[data-theme="dark"] .nodes-confirm,
 body.dark .nodes-confirm {
@@ -245,4 +249,39 @@ body.dark .nodes-confirm {
   .nodes-modal { padding:10px; }
   .nodes-modal__head,.nodes-modal__body,.nodes-modal__footer { padding-left:14px; padding-right:14px; }
   .nodes-modal__note { margin-left:14px; margin-right:14px; }
+}
+
+.nodes-provision-jobs {
+  padding: 16px 20px;
+  border: 1px solid var(--n-line);
+  border-radius: 14px;
+  background: var(--n-surface);
+}
+.nodes-provision-jobs h2 { margin: 0 0 8px; font-size: 15px; }
+.nodes-provision-jobs ul { margin: 0; padding: 0; list-style: none; }
+.nodes-provision-job {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 10px 0;
+}
+.nodes-provision-job + .nodes-provision-job { border-top: 1px solid var(--n-line); }
+.nodes-provision-job p { margin: 3px 0 0; color: var(--n-muted); overflow-wrap: anywhere; }
+.nodes-provision-job strong { overflow-wrap: anywhere; }
+.nodes-provision-job__actions { display: flex; align-items: center; gap: 8px; }
+.nodes-provision-status { font-weight: 700; }
+.nodes-provision-status[data-status="done"] { color: var(--n-green); }
+.nodes-provision-status[data-status="failed"], .nodes-provision-error { color: var(--n-red); }
+.nodes-provision-dialog { max-height: calc(100dvh - 32px); padding: 0; overflow: auto; }
+.nodes-provision-dialog *, .nodes-provision-dialog { box-sizing: border-box; }
+.nodes-provision-dialog:not([open]) { display: none; }
+.nodes-provision-dialog::backdrop { background: rgba(7, 10, 18, .65); }
+.nodes-provision-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.nodes-provision-ports summary { cursor: pointer; margin-bottom: 8px; }
+.nodes-provision-ports .nodes-provision-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.nodes-provision-help, .nodes-provision-error { font-size: 12px; margin: 0; }
+.nodes-provision-help { color: var(--n-muted); }
+@media (max-width: 520px) {
+  .nodes-provision-fields, .nodes-provision-ports .nodes-provision-fields { grid-template-columns: 1fr; }
 }

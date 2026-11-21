@@ -382,7 +382,7 @@ def install_requirements(root: Path):
     pause()
 
 
-def _wireguard_installed() -> bool:
+def _wireguard_installed(root: Path | None = None) -> bool:
     if all(_cmd(binary) for binary in ("awg", "awg-quick", "amneziawg-go")):
         return True
     if not _cmd("apt-get") or not isitroot():
@@ -392,7 +392,7 @@ def _wireguard_installed() -> bool:
     if _live(["apt-get", "install", "-y", "build-essential", "git", "curl",
               "ca-certificates", "iproute2", "iptables", "nftables"], "Install host dependencies") != 0:
         return False
-    return _live(["bash", str(_root() / "scripts/install-awg.sh")], "Install AmneziaWG 3.1", timeout=900) == 0
+    return _live(["bash", str((root or _root()) / "scripts/install-awg.sh")], "Install AmneziaWG 3.1", timeout=900) == 0
 
 
 def _ip_forwarding():
@@ -445,6 +445,8 @@ def _wg_conf(
     egress: str,
     dns: str = "",
     mtu: str = "",
+    *,
+    root: Path | None = None,
 ) -> str:
 
     network = (
@@ -473,7 +475,7 @@ def _wg_conf(
         f"ListenPort = {listen_port}",
         f"PrivateKey = {privkey}",
     ]
-    config_tools = runpy.run_path(str(_root() / "agent/awg_config.py"))
+    config_tools = runpy.run_path(str((root or _root()) / "agent/awg_config.py"))
     lines.extend(config_tools["new_interface_lines"]())
 
     if mtu.strip():
@@ -1066,6 +1068,30 @@ def _wizard(root: Path) -> dict:
     return result
 
 
+def _agent_unit_text(root: Path) -> str:
+    a = agent_dir(root)
+    env_path = a / ".env"
+    node_agent = a / "node_agent.py"
+    vpy = a / "venv" / "bin" / "python"
+    return f"""[Unit]
+Description=WG Node Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={a}
+EnvironmentFile={env_path}
+ExecStart={vpy} {node_agent}
+Restart=always
+RestartSec=2
+User=root
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def install_agent(root: Path):
     if not isitroot():
         err("Service install requires sudo/root.")
@@ -1094,24 +1120,7 @@ def install_agent(root: Path):
         return
 
     unit = Path("/etc/systemd/system/wg-node-agent.service")
-    text = f"""[Unit]
-Description=WG Node Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory={a}
-EnvironmentFile={env_path}
-ExecStart={vpy} {node_agent}
-Restart=always
-RestartSec=2
-User=root
-
-[Install]
-WantedBy=multi-user.target
-"""
-    _write(unit, text)
+    _write(unit, _agent_unit_text(root))
     run(["systemctl","daemon-reload"], "daemon-reload")
     run(["systemctl","enable","--now","wg-node-agent.service"], "enable --now")
     ok("wg-node-agent.service installed + started.")

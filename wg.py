@@ -1626,7 +1626,7 @@ def panel_settings(root: Path):
         ps["tls_key_path"] = key_path
 
         if not _le_cert_exists(domain):
-            email_default = f"admin@{domain}"
+            email_default = str(ps.get("le_email") or f"admin@{domain}")
             email = ask("Certbot email (for renewal notices)", default=email_default, show_default=True).strip() or email_default
             if not isitroot():
                 err("TLS certificate obtain requires sudo.")
@@ -1639,6 +1639,7 @@ def panel_settings(root: Path):
             if not _obtain_cert(domain, email=email, staging=False):
                 warn("TLS enabled but certificate was not obtained.")
                 warn("You can retry later after fixing DNS/port 80, or place certs manually in /etc/letsencrypt.")
+            ps["le_email"] = email
         else:
             ok("Existing Let’s Encrypt certificate detected (reusing).")
 

@@ -31,6 +31,11 @@
       >
         <i class="fas fa-rotate-right"></i><span>Refresh</span>
       </button>
+      {% if current_user.is_admin or current_user.is_superuser %}
+      <button id="open-node-setup" class="nodes-btn nodes-btn--quiet" type="button">
+        <i class="fas fa-terminal" aria-hidden="true"></i><span>Setup new node</span>
+      </button>
+      {% endif %}
       <button
         id="open-node-modal"
         class="nodes-btn nodes-btn--primary"
@@ -40,6 +45,14 @@
       </button>
     </div>
   </header>
+
+  {% if current_user.is_admin or current_user.is_superuser %}
+  <section id="node-setup-jobs" class="nodes-provision-jobs" aria-labelledby="node-setup-jobs-title" hidden>
+    <h2 id="node-setup-jobs-title">Node setup</h2>
+    <p id="node-setup-jobs-error" role="status" hidden></p>
+    <ul id="node-setup-job-list"></ul>
+  </section>
+  {% endif %}
 
   <section class="nodes-summary" aria-label="Fleet summary">
     <article class="nodes-summary__card nodes-summary__card--nodes">
@@ -288,6 +301,73 @@
     </form>
   </div>
 </div>
+
+{% if current_user.is_admin or current_user.is_superuser %}
+<dialog id="node-setup-dialog" class="nodes-modal__card nodes-provision-dialog" aria-labelledby="node-setup-title">
+  <header class="nodes-modal__head">
+    <div>
+      <h2 id="node-setup-title">Setup new node</h2>
+      <p>Install an AmneziaWG node on a Debian or Ubuntu server and add it to this panel.</p>
+    </div>
+    <button class="nodes-icon-btn" type="button" data-close-setup aria-label="Close">
+      <i class="fas fa-times" aria-hidden="true"></i>
+    </button>
+  </header>
+  <form id="node-setup-form" method="post" autocomplete="off">
+    <div class="nodes-modal__body">
+      <div class="nodes-provision-fields">
+        <label class="nodes-field">
+          <span>Server IP</span>
+          <input class="nodes-input" name="ip" placeholder="203.0.113.10" maxlength="45" required autofocus />
+        </label>
+        <label class="nodes-field">
+          <span>SSH username</span>
+          <input class="nodes-input" name="username" value="root" maxlength="64" autocomplete="username" required />
+        </label>
+        <label class="nodes-field">
+          <span>SSH password</span>
+          <input class="nodes-input" name="password" type="password" autocomplete="new-password" maxlength="1024" required />
+        </label>
+        <label class="nodes-field">
+          <span>HTTPS domain</span>
+          <input class="nodes-input" name="domain" placeholder="node.example.com" maxlength="240" spellcheck="false" required />
+        </label>
+        <label class="nodes-field">
+          <span>Let’s Encrypt email</span>
+          <input class="nodes-input" name="email" type="email" value="{{ node_setup_email }}" maxlength="254" required />
+        </label>
+        <label class="nodes-field">
+          <span>Node name (optional)</span>
+          <input class="nodes-input" name="name" maxlength="64" placeholder="Defaults to the domain" />
+        </label>
+      </div>
+      <details class="nodes-provision-ports">
+        <summary>Ports</summary>
+        <div class="nodes-provision-fields">
+          <label class="nodes-field">
+            <span>SSH (TCP)</span>
+            <input class="nodes-input" name="ssh_port" type="number" value="22" min="1" max="65535" required />
+          </label>
+          <label class="nodes-field">
+            <span>Node API (TCP)</span>
+            <input class="nodes-input" name="node_port" type="number" value="8443" min="1" max="65535" required />
+          </label>
+          <label class="nodes-field">
+            <span>AmneziaWG (UDP)</span>
+            <input class="nodes-input" name="awg_port" type="number" value="51820" min="1" max="65535" required />
+          </label>
+        </div>
+      </details>
+      <p class="nodes-provision-help">Point the domain directly to this IP and allow inbound TCP port 80 for certificate issuance. The first SSH host key is remembered automatically.</p>
+      <p id="node-setup-form-error" class="nodes-provision-error" role="alert" hidden></p>
+    </div>
+    <footer class="nodes-modal__footer">
+      <button type="button" class="nodes-btn nodes-btn--quiet" data-close-setup>Cancel</button>
+      <button type="submit" class="nodes-btn nodes-btn--primary">Start setup</button>
+    </footer>
+  </form>
+</dialog>
+{% endif %}
 
 <div id="ui-confirm" class="nodes-confirm" hidden>
   <div class="nodes-confirm__sheet">

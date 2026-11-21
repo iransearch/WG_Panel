@@ -13169,6 +13169,7 @@ def _load_panel_settings():
         "tls_cert_path": (j.get("tls_cert_path")or "").strip(),
 
         "tls_key_path": (j.get("tls_key_path")or "").strip(),
+        "le_email": str(j.get("le_email") or "").strip(),
 
         "timezone": timezone_name,
         }
@@ -17669,7 +17670,10 @@ def clear_peer_logs(pid):
 @app.route('/nodes', endpoint='nodes', methods=['GET'])
 @login_required
 def nodes():
-    return render_template('nodes.html')
+    return render_template(
+        'nodes.html',
+        node_setup_email=_load_panel_settings().get("le_email") or "",
+    )
 
 @app.route('/ui/nodes', methods=['GET'])
 @login_required
@@ -17695,6 +17699,35 @@ def ui_nodes():
 @login_required
 def api_docs_page():
     return render_template('api_docs.html')
+
+@app.route('/ui/node-setup', methods=['GET', 'POST'])
+@admin_required
+def ui_node_setup():
+    from panel_core import node_registry, node_setup
+
+    directory = Path(app.instance_path) / "node-setup"
+    if request.method == "GET":
+        return jsonify(jobs=node_setup.list_jobs(directory))
+
+    if not _is_https() and not (
+        request.remote_addr in {"127.0.0.1", "::1"}
+        and urlparse(request.host_url).hostname in {"127.0.0.1", "::1", "localhost"}
+    ):
+        return jsonify(error="Open the panel over HTTPS to submit an SSH password."), 400
+
+    try:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict) and not payload.get("email"):
+            payload["email"] = _load_panel_settings().get("le_email") or ""
+        settings, password = node_setup.parse_settings(payload)
+        if node_registry.has_node(settings["name"], settings["base_url"]):
+            raise node_setup.SetupConflict("Node name or URL already exists.")
+        return jsonify(job=node_setup.enqueue(directory, settings, password)), 202
+    except node_setup.SetupConflict as exc:
+        return jsonify(error=str(exc)), 409
+    except node_setup.SetupError as exc:
+        return jsonify(error=str(exc)), 400
+
 
 @app.route('/api/nodes', methods=['GET', 'POST'])
 @require_api_key_or_login
@@ -17735,20 +17768,13 @@ def api_nodes():
     if not ok:
         return jsonify(error=reason), 400
 
-    dup = (Node.query.filter_by(name=name).first() or
-           Node.query.filter_by(base_url=base_url).first())
-    if dup:
-        return jsonify(error='Node name or base_url already exists'), 409
+    from panel_core.node_registry import NodeAlreadyExists, add_node
 
-    n = Node(
-        name=name,
-        base_url=base_url,
-        api_key=_probably_encrypt(api_key),
-        enabled=True
-    )
-    db.session.add(n)
-    db.session.commit()
-    return jsonify(ok=True, id=n.id), 201
+    try:
+        node_id = add_node(name, base_url, _probably_encrypt(api_key))
+    except NodeAlreadyExists:
+        return jsonify(error="Node name or base_url already exists"), 409
+    return jsonify(ok=True, id=node_id), 201
 
 
 @app.route('/api/nodes/<int:nid>/peer/<path:pub>/disable', methods=['POST'])

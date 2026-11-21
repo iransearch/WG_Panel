@@ -50,6 +50,7 @@
   let searchText = '';
   let editingId = null;
   let loading = false;
+  let refreshRequested = false;
 
   const escapeHtml = (value) => String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -332,7 +333,10 @@
   }
 
   async function load() {
-    if (loading) return;
+    if (loading) {
+      refreshRequested = true;
+      return;
+    }
     loading = true;
     setSync('loading', 'Refreshing');
     try {
@@ -350,6 +354,10 @@
       notify(error.message || 'Could not load nodes.', 'error');
     } finally {
       loading = false;
+      if (refreshRequested) {
+        refreshRequested = false;
+        load();
+      }
     }
   }
 
@@ -569,6 +577,132 @@
     });
   }
 
+  function initNodeSetup() {
+    const dialog = $('#node-setup-dialog');
+    if (!dialog) return;
+
+    const setupForm = $('#node-setup-form');
+    const submit = $('[type="submit"]', setupForm);
+    const jobPanel = $('#node-setup-jobs');
+    const jobList = $('#node-setup-job-list');
+    const jobsError = $('#node-setup-jobs-error');
+    const formError = $('#node-setup-form-error');
+    const url = '/ui/node-setup';
+    const labels = { pending: 'Pending', running: 'Running', done: 'Done', failed: 'Failed' };
+    let priorDone = new Set();
+    let priorJobs = new Map();
+    let initial = true;
+    let polling = false;
+    let timer;
+
+    function openSetup(settings = null) {
+      setupForm.reset();
+      formError.hidden = true;
+      for (const name of ['ip', 'username', 'domain', 'email', 'name', 'ssh_port', 'node_port', 'awg_port']) {
+        if (settings) setupForm.elements.namedItem(name).value = settings[name] ?? '';
+      }
+      if (!dialog.open) dialog.showModal();
+      if (settings) setupForm.elements.password.focus();
+    }
+
+    function renderJobs(jobs) {
+      jobPanel.hidden = !jobs.length;
+      const rows = jobs.map((job) => {
+        const row = document.createElement('li');
+        row.className = 'nodes-provision-job';
+        const description = document.createElement('div');
+        const name = document.createElement('strong');
+        name.textContent = job.settings.name;
+        const detail = document.createElement('p');
+        detail.textContent = `${job.settings.domain} · ${job.message}`;
+        description.append(name, detail);
+
+        const actions = document.createElement('div');
+        actions.className = 'nodes-provision-job__actions';
+        const status = document.createElement('span');
+        status.className = 'nodes-provision-status';
+        status.dataset.status = job.status;
+        status.textContent = labels[job.status] || job.status;
+        actions.append(status);
+        if (job.status === 'failed') {
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'nodes-btn nodes-btn--quiet';
+          retry.textContent = 'Retry';
+          retry.addEventListener('click', () => openSetup(job.settings));
+          actions.append(retry);
+        }
+        row.append(description, actions);
+        return row;
+      });
+      jobList.replaceChildren(...rows);
+    }
+
+    async function pollJobs() {
+      if (polling) return;
+      clearTimeout(timer);
+      polling = true;
+      let delay = 15000;
+      try {
+        const payload = await api(url);
+        const jobs = payload.jobs || [];
+        const done = new Set(jobs.filter((job) => job.status === 'done').map((job) => job.id));
+        if (!initial && [...done].some((id) => !priorDone.has(id))) {
+          load();
+        }
+        initial = false;
+        priorDone = done;
+        if (jobs.some((job) => priorJobs.get(job.id)?.status !== job.status ||
+            priorJobs.get(job.id)?.message !== job.message) || jobs.length !== priorJobs.size) {
+          renderJobs(jobs);
+        }
+        priorJobs = new Map(jobs.map((job) => [job.id, job]));
+        jobsError.hidden = true;
+        if (jobs.some((job) => job.status === 'pending' || job.status === 'running')) delay = 2500;
+      } catch (error) {
+        jobPanel.hidden = false;
+        jobsError.textContent = error.message || 'Could not refresh setup status.';
+        jobsError.hidden = false;
+      } finally {
+        polling = false;
+        timer = setTimeout(pollJobs, delay);
+      }
+    }
+
+    $('#open-node-setup')?.addEventListener('click', () => openSetup());
+    $$('[data-close-setup]', dialog).forEach((button) => {
+      button.addEventListener('click', () => dialog.close());
+    });
+    dialog.addEventListener('close', () => { setupForm.elements.password.value = ''; });
+    setupForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      formError.hidden = true;
+      try {
+        if (location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
+          throw new Error('Open the panel over HTTPS to submit an SSH password.');
+        }
+        const data = Object.fromEntries(new FormData(setupForm));
+        const { job } = await api(url, {
+          method: 'POST',
+          headers: csrfHeaders(true),
+          body: JSON.stringify(data),
+        });
+        priorJobs.set(job.id, job);
+        renderJobs([job, ...[...priorJobs.values()].filter((item) => item.id !== job.id)]);
+        dialog.close();
+        pollJobs();
+      } catch (error) {
+        formError.textContent = error.message || 'Could not start node setup.';
+        formError.hidden = false;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    pollJobs();
+  }
+
+  initNodeSetup();
   load();
   setInterval(refreshRelativeTimes, 30000);
 })();
