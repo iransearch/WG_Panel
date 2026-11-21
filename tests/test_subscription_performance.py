@@ -3,6 +3,7 @@ from base64 import b64encode
 from gzip import decompress
 from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
+from subprocess import TimeoutExpired
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -11,7 +12,7 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet
 from sqlalchemy import event, inspect
 
-from models import AdminAccount, InterfaceConfig, OperationEvent, Peer, Subscription, SubscriptionPeer, db
+from models import AdminAccount, InterfaceConfig, Node, OperationEvent, Peer, Subscription, SubscriptionPeer, db
 
 
 class SubscriptionPerformanceTests(unittest.TestCase):
@@ -99,6 +100,66 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(payload['pagination']['total'], 1)
             self.assertEqual(payload['summary']['total'], 12)
             self.assertEqual(payload['subscriptions'][0]['name'], 'Client 11')
+
+    def test_dashboard_counts_recent_users_once_and_reports_missing_sources(self):
+        self.add_clients(9)
+        path = '/api/dashboard/peer-activity'
+        with self.panel.app.app_context():
+            self.assertEqual(self.client.get(path).status_code, 302)
+        db.session.add(AdminAccount(username='dashboard-test', password_hash='unused'))
+        node = Node(name='Edge', base_url='https://edge.example.test', api_key='test-key')
+        peers = Peer.query.order_by(Peer.id).all()
+        peers[1].subscription_links[0].subscription_id = peers[0].subscription_links[0].subscription_id
+        peers[2].status = 'blocked'
+        peers[3].subscription_links[0].subscription.enabled = False
+        peers[4].iface = InterfaceConfig(
+            name='edge-wg', node=node, path='/tmp/edge-wg.conf', address='10.2.0.1/24',
+            listen_port=51820, private_key='fixture',
+        )
+        db.session.commit()
+        with self.client.session_transaction() as session:
+            session['_user_id'] = '1'
+            session['_fresh'] = True
+
+        now = 1000
+        # The stale peer has traffic counters, and the blocked peers still have recent handshakes.
+        local_dump = ''.join(
+            f'test-awg\tpublic-{i}\t(none)\t(none)\t10.1.0.{i + 2}/32\t{timestamp}\t1024\t2048\t0\n'
+            for i, timestamp in enumerate([990, 820, 998, 999, 0, 819, 600, 500, 400])
+        ).encode()
+        remote = {'peers': [{
+            'iface': 'edge-wg', 'public_key': 'public-4', 'latest_handshake': 2000,
+            'latest_handshake_age': 4, 'rx_bytes': 512, 'tx_bytes': 256,
+        }]}
+        with patch.object(self.panel, 'now_ts', return_value=now), patch.object(
+            self.panel.subprocess, 'check_output', return_value=local_dump,
+        ) as awg, patch.object(self.panel._node_client, 'get', return_value=remote) as remote_get:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
+            data = response.get_json()
+            self.assertEqual(data['online_users'], 2)
+            self.assertEqual(data['counts'], dict(online=3, inactive=4, blocked=2, unknown=0))
+            self.assertEqual([peer['name'] for peer in data['recent']], ['Peer 4', 'Peer 0', 'Peer 1', 'Peer 5', 'Peer 6'])
+            self.assertEqual(data['recent'][0]['node'], 'Edge')
+            self.assertNotIn('public_key', data['recent'][0])
+            awg.assert_called_once()
+            self.assertEqual(awg.call_args.args[0], ['awg', 'show', 'all', 'dump'])
+            remote_get.assert_called_once_with(node.base_url, '/api/peers?counters_only=1', node.api_key, timeout=3)
+
+            remote_get.return_value = {'peers': [], 'runtime_available': False}
+            partial = self.client.get(path).get_json()
+            self.assertEqual(partial['online_users'], 1)
+            self.assertEqual(partial['counts']['unknown'], 1)
+            awg.side_effect = TimeoutExpired('awg', 2)
+            self.assertIsNone(self.client.get(path).get_json()['online_users'])
+
+            awg.side_effect = None
+            awg.return_value = b''
+            remote_get.return_value = {'peers': [], 'runtime_available': True}
+            data = self.client.get(path).get_json()
+            self.assertEqual(data['online_users'], 0)
+            self.assertEqual(data['counts']['unknown'], 0)
 
     def test_one_sweep_updates_counters_first_use_and_shared_quota(self):
         self.add_clients(2)

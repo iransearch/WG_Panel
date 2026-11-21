@@ -2886,6 +2886,7 @@ def peers():
     want_iface = (request.args.get('iface') or '').strip()
     counters_only = request.args.get('counters_only') == '1'
     peers = []
+    runtime_available = False
     now = int(time.time())
 
     try:
@@ -2990,6 +2991,7 @@ def peers():
                 'status': status,
             })
 
+        runtime_available = True
     except subprocess.TimeoutExpired:
         app.logger.warning('Timed out while reading AmneziaWG peer state')
     except subprocess.CalledProcessError as exc:
@@ -2999,6 +3001,8 @@ def peers():
     except Exception:
         app.logger.exception('Could not collect AmneziaWG peer state')
 
+    if counters_only:
+        return jsonify(peers=peers, runtime_available=runtime_available)
     return jsonify(peers=peers)
 
 def _node_version() -> str:

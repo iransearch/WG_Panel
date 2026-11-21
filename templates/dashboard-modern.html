@@ -55,12 +55,12 @@ endblock %} {% block head_extras %}<link
     <article class="nx-metric">
       <span class="nx-metric-icon"><i class="fas fa-users"></i></span>
       <div>
-        <span>Connected peers</span><strong id="nx-connected">—</strong
-        ><small id="nx-peer-caption">Waiting for peer data</small>
+        <span>Online users</span><strong id="nx-connected">—</strong
+        ><small id="nx-peer-caption" role="status">Checking peer activity…</small>
       </div>
       <canvas
         id="nx-peer-spark"
-        aria-label="Connected peers during this session"
+        aria-label="Online users during this session"
         role="img"
       ></canvas>
     </article>
@@ -284,6 +284,6 @@ endblock %} {% block head_extras %}<link
 {% endblock %} {% block body_extras %}
 <script
   defer
-  src="{{ url_for('static', filename='js/dashboard-modern.js', v='startup-1') }}"
+  src="{{ url_for('static', filename='js/dashboard-modern.js', v='peer-activity-1') }}"
 ></script>
 {% endblock %}

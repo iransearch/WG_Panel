@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 import os, glob, subprocess, time, shlex, logging, ipaddress, psutil, requests, json, tempfile, sys, zipfile, datetime as dt, ipaddress, platform, re, qrcode, multiprocessing, threading, shutil, signal
 from io import BytesIO
+from concurrent.futures import ThreadPoolExecutor
+from heapq import nlargest
 from itertools import islice
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
@@ -19070,6 +19072,128 @@ def _rate_mb(cur_bytes, prev_bytes, dt):
         return 0.0
     return max(0.0, (cur_bytes - prev_bytes) / dt / (1024 * 1024))
 
+
+
+DASHBOARD_HANDSHAKE_WINDOW = 180
+
+
+def _dashboard_local_activity():
+    try:
+        dump = subprocess.check_output(
+            ['awg', 'show', 'all', 'dump'], stderr=subprocess.DEVNULL, timeout=2,
+        ).decode(errors='replace')
+        activity = {}
+        for line in dump.splitlines():
+            columns = line.split('\t')
+            if len(columns) == 9:
+                activity[columns[0], columns[1]] = tuple(map(int, columns[5:8]))
+        return activity
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _dashboard_node_activity(node):
+    try:
+        payload = _node_client.get(node.base_url, '/api/peers?counters_only=1', node.api_key, timeout=3)
+        if not isinstance(payload, dict) or payload.get('runtime_available') is False:
+            return None
+        peers = payload.get('peers')
+        if not isinstance(peers, list) or (not peers and payload.get('runtime_available') is not True):
+            return None
+        sampled_at = now_ts()
+        activity = {}
+        for peer in peers:
+            handshake = int(peer.get('latest_handshake') or 0)
+            age = peer.get('latest_handshake_age')
+            if handshake and age is not None:
+                handshake = sampled_at - int(age)
+            if 'rx_bytes' in peer and 'tx_bytes' in peer:
+                rx_bytes, tx_bytes = int(peer['rx_bytes']), int(peer['tx_bytes'])
+            else:
+                rx_bytes = round(float(peer.get('rx_mib') or 0) * 1048576)
+                tx_bytes = round(float(peer.get('tx_mib') or 0) * 1048576)
+            activity[peer['iface'], peer['public_key']] = (handshake, rx_bytes, tx_bytes)
+        return activity
+    except (requests.RequestException, AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+@app.get('/api/dashboard/peer-activity')
+@login_required
+def dashboard_peer_activity():
+    """Read live peer activity without building or modifying the peer inventory."""
+    peers = (
+        db.session.query(
+            Peer.id, Peer.name.label('peer_name'), Peer.address, Peer.public_key, Peer.status,
+            InterfaceConfig.name, InterfaceConfig.node_id,
+            SubscriptionPeer.subscription_id, Subscription.enabled.label('subscription_enabled'),
+        )
+        .select_from(Peer)
+        .join(InterfaceConfig, Peer.iface_id == InterfaceConfig.id)
+        .outerjoin(SubscriptionPeer, SubscriptionPeer.peer_id == Peer.id)
+        .outerjoin(Subscription, Subscription.id == SubscriptionPeer.subscription_id)
+        .all()
+    )
+    node_ids_by_interface = {
+        peer.name: _node_id_from_iface(peer) for peer in peers
+    }
+    active_sources = {
+        node_ids_by_interface[peer.name] for peer in peers
+        if peer.status == 'online' and peer.subscription_enabled is not False
+    }
+    node_ids = active_sources - {None}
+    nodes = db.session.query(Node.id, Node.name, Node.base_url, Node.api_key, Node.enabled).filter(
+        Node.id.in_(node_ids)
+    ).all() if node_ids else []
+    activity = {node_id: None for node_id in active_sources}
+    if None in active_sources:
+        activity[None] = _dashboard_local_activity()
+    enabled_nodes = [node for node in nodes if node.enabled]
+    if enabled_nodes:
+        with ThreadPoolExecutor(max_workers=min(8, len(enabled_nodes))) as pool:
+            activity.update(zip((node.id for node in enabled_nodes), pool.map(_dashboard_node_activity, enabled_nodes)))
+    node_names = {node.id: node.name for node in nodes}
+
+    counts = dict(online=0, inactive=0, blocked=0, unknown=0)
+    online_users = set()
+    recent = []
+    seen_peers = set()
+    sampled_at = now_ts()
+    for peer in peers:
+        if peer.id in seen_peers:
+            continue
+        seen_peers.add(peer.id)
+        if peer.status != 'online' or peer.subscription_enabled is False:
+            counts['blocked'] += 1
+            continue
+        node_id = node_ids_by_interface[peer.name]
+        source = activity[node_id]
+        if source is None:
+            counts['unknown'] += 1
+            continue
+        device = peer.name.rsplit(':', 1)[-1]
+        handshake, rx_bytes, tx_bytes = source.get((device, peer.public_key), (0, 0, 0))
+        online = handshake > 0 and 0 <= sampled_at - handshake <= DASHBOARD_HANDSHAKE_WINDOW
+        counts['online' if online else 'inactive'] += 1
+        if online:
+            owner = ('subscription', peer.subscription_id) if peer.subscription_id else ('peer', peer.id)
+            online_users.add(owner)
+        if handshake > 0:
+            recent.append({
+                'name': peer.peer_name, 'address': peer.address, 'interface': device,
+                'node': node_names.get(node_id, 'Remote node') if node_id is not None else 'Local server',
+                'latest_handshake': handshake, 'online': online,
+                'rx_bytes': rx_bytes, 'tx_bytes': tx_bytes,
+            })
+
+    available = bool(counts['online'] or counts['inactive'] or not counts['unknown'])
+    response = jsonify(
+        online_users=len(online_users) if available else None,
+        counts=counts, sampled_at=sampled_at, handshake_window=DASHBOARD_HANDSHAKE_WINDOW,
+        recent=nlargest(5, recent, key=lambda peer: peer['latest_handshake']),
+    )
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @app.get('/api/peer_counts')
