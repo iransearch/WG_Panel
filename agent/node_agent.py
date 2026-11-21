@@ -354,7 +354,7 @@ def _read_iface(path):
 
             elif lk == 'listenport':
                 try:
-                    listen_port = int(v)
+                    listen_port = int(v.split('#', 1)[0])
                 except Exception:
                     pass
 
@@ -5340,6 +5340,126 @@ def iface_availableIPS(name):
     return jsonify(available_ips=ips)
 
 
+@contextmanager
+def _iface_config_lock(path, *, blocking=True):
+    # Share the lock used by peer writes and deletes.
+    with open(path + '.lock', 'a', encoding='utf-8') as handle:
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        fcntl.flock(handle, flags)
+        yield
+
+
+def _set_listen_port(name, port):
+    subprocess.run(
+        ['awg', 'set', name, 'listen-port', str(port)],
+        capture_output=True, timeout=8, check=True, text=True,
+    )
+
+
+def _save_listen_port(name, path, port):
+    with open(path, encoding='utf-8', newline='') as handle:
+        original = handle.read()
+    lines = original.splitlines(keepends=True)
+    in_interface = False
+    modified_port = False
+    for index, line in enumerate(lines):
+        value = line.partition('#')[0].strip()
+        if value.startswith('['):
+            in_interface = value.lower() == '[interface]'
+        if not in_interface:
+            continue
+        match = re.fullmatch(
+            r'([ \t]*ListenPort[ \t]*=[ \t]*)[0-9]+([ \t]*(?:#[^\r\n]*)?[\r\n]*)',
+            line, re.IGNORECASE,
+        )
+        if match:
+            lines[index] = f'{match[1]}{port}{match[2]}'
+            modified_port = True
+    if not modified_port:
+        return jsonify(error='invalid_interface_config',
+                       detail='The interface config has no valid ListenPort entry.'), 409
+
+    updated = ''.join(lines)
+    is_up = _iface_up(name)
+    previous_port = None
+    if is_up:
+        result = subprocess.run(
+            ['awg', 'show', name, 'listen-port'],
+            capture_output=True, timeout=4, check=True, text=True,
+        )
+        previous_port = int(result.stdout.strip())
+
+    changed = updated != original or (is_up and previous_port != port)
+    if not changed:
+        return jsonify(ok=True, listen_port=port, is_up=is_up, changed=False)
+
+    for other_path in Path(path).parent.glob('*.conf'):
+        if other_path.name == f'{name}.conf':
+            continue
+        other = _read_iface(other_path)
+        if other and other['listen_port'] == port:
+            return jsonify(
+                error='listen_port_in_use',
+                detail=f'UDP port {port} is already configured for {other["name"]}.',
+            ), 409
+
+    runtime_change = is_up and previous_port != port
+    try:
+        if runtime_change:
+            _set_listen_port(name, port)
+        if updated != original:
+            _write_conf_atomic(path, updated)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if runtime_change:
+            try:
+                _set_listen_port(name, previous_port)
+            except (OSError, subprocess.SubprocessError):
+                app.logger.exception('Listen port rollback failed for %s', name)
+                return jsonify(
+                    error='listen_port_rollback_failed',
+                    detail='Could not restore the live listen port. Check the interface on the node.',
+                ), 500
+        if isinstance(exc, subprocess.CalledProcessError):
+            if 'address already in use' in (exc.stderr or '').lower():
+                return jsonify(error='listen_port_in_use', detail=f'UDP port {port} is already in use.'), 409
+            return jsonify(error='listen_port_apply_failed',
+                           detail=f'Could not set UDP port {port} on {name}.'), 502
+        raise
+    return jsonify(ok=True, listen_port=port, is_up=is_up, changed=True)
+
+
+@app.post('/api/iface/<name>/listen-port')
+@require_api_key
+def iface_listen_port(name):
+    try:
+        name = _safe_iface_name(name)
+    except ValueError as exc:
+        return jsonify(error='invalid_iface', detail=str(exc)), 400
+
+    data = request.get_json(silent=True)
+    port = data.get('listen_port') if isinstance(data, dict) else None
+    if type(port) is not int or not 1 <= port <= 65535:
+        return jsonify(error='invalid_listen_port',
+                       detail='Listen port must be an integer between 1 and 65535.'), 400
+
+    path = _iface_conf_path(name)
+    if not os.path.isfile(path):
+        return jsonify(error='not_found', detail=f'Interface {name} was not found.'), 404
+    try:
+        with _node_ops_locked(), _iface_config_lock(path, blocking=False):
+            return _save_listen_port(name, path, port)
+    except BlockingIOError:
+        return jsonify(error='interface_busy', detail='The node is busy. Retry shortly.'), 409
+    except FileNotFoundError:
+        if not os.path.isfile(path):
+            return jsonify(error='not_found', detail=f'Interface {name} was not found.'), 404
+        app.logger.exception('Listen port command unavailable for %s', name)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        app.logger.exception('Listen port update failed for %s', name)
+    return jsonify(error='listen_port_save_failed',
+                   detail='Could not save the listen port on the node.'), 500
+
+
 @app.route('/api/iface/<name>/up', methods=['POST'])
 @require_api_key
 def iface_up(name):
@@ -5347,7 +5467,11 @@ def iface_up(name):
         name = _safe_iface_name(name)
     except ValueError:
         return jsonify(error='invalid_iface'), 400
-    subprocess.check_call(['awg-quick', 'up', _iface_conf_path(name)], timeout=30)
+    path = _iface_conf_path(name)
+    if not os.path.isfile(path):
+        return jsonify(error='not_found'), 404
+    with _iface_config_lock(path):
+        subprocess.check_call(['awg-quick', 'up', path], timeout=30)
     return jsonify(ok=True)
 
 @app.route('/api/iface/<name>/down', methods=['POST'])
@@ -5357,7 +5481,11 @@ def iface_down(name):
         name = _safe_iface_name(name)
     except ValueError:
         return jsonify(error='invalid_iface'), 400
-    subprocess.check_call(['awg-quick', 'down', _iface_conf_path(name)], timeout=30)
+    path = _iface_conf_path(name)
+    if not os.path.isfile(path):
+        return jsonify(error='not_found'), 404
+    with _iface_config_lock(path):
+        subprocess.check_call(['awg-quick', 'down', path], timeout=30)
     return jsonify(ok=True)
 
 @app.route('/api/iface/<name>', methods=['DELETE'])

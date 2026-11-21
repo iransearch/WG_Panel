@@ -291,7 +291,7 @@
     else { try { payload = await res.text(); } catch {} }
 
     if (!res.ok) {
-      let msg = (payload && payload.error) ? payload.error
+      let msg = (payload && (payload.detail || payload.error)) ? (payload.detail || payload.error)
         : (typeof payload === 'string' && payload) || ('HTTP ' + res.status);
       const s = String(msg).toLowerCase();
       if (s.includes('<html') || s.includes('<!doctype') || msg.length > 180) {
@@ -819,9 +819,6 @@ document.getElementById('rt-restart')
       if (window.RUNTIME_RESTART_CMD && cmdEl) cmdEl.textContent = window.RUNTIME_RESTART_CMD;
     })();
   });
-})();
-
-
 
   (function iface() {
   let statusTimer = null;
@@ -829,6 +826,9 @@ document.getElementById('rt-restart')
   let IFACE_NODE  = null;      
   let NODE_IFACES = [];       
   let loadIfaceAbort;
+  let listenPortEdited = false;
+  let savingNodePort = false;
+  let nodePortRevision = 0;
 
   const $  = (s, r = document) => r.querySelector(s);
   const toast = (m, t='info') => (window.toastSafe ? window.toastSafe(m, t) : window.toast(m, t));
@@ -845,9 +845,20 @@ document.getElementById('rt-restart')
     const btnUp   = $('#iface-up');
     const btnDn   = $('#iface-down');
     if (btnSave) {
-      btnSave.disabled = !save;
-      btnSave.title    = save ? '' : 'Editing interface settings on nodes is disabled';
+      btnSave.disabled = !save || (scope === 'node' && savingNodePort);
+      btnSave.title = save ? '' : 'Select an interface first';
+      const saveLabel = scope === 'node' ? 'Save listen port' : 'Save changes';
+      btnSave.querySelector('span').textContent = saveLabel;
     }
+    for (const id of ['i-dns', 'i-mtu']) {
+      const input = document.getElementById(id);
+      if (input) {
+        input.readOnly = scope === 'node';
+        input.closest('.iface-field-card')?.classList.toggle('is-readonly', input.readOnly);
+      }
+    }
+    const listenPort = $('#i-listen');
+    if (listenPort) listenPort.disabled = !save;
     if (btnUp) { btnUp.dataset.scope = scope; btnUp.dataset.target = String(target ?? ''); }
     if (btnDn) { btnDn.dataset.scope = scope; btnDn.dataset.target = String(target ?? ''); }
 
@@ -867,7 +878,7 @@ document.getElementById('rt-restart')
     set('i-name',    meta?.name ?? '');
     set('i-path',    meta?.path ?? '');
     set('i-address', meta?.address ?? '');
-    set('i-listen',  meta?.listen_port ?? '');
+    if (IFACE_SCOPE === 'local' || !listenPortEdited) set('i-listen', meta?.listen_port ?? '');
     set('i-dns',     meta?.dns ?? '');
     set('i-mtu',     meta?.mtu ?? '');
     const setEditable = (id, v) => {
@@ -924,6 +935,8 @@ document.getElementById('rt-restart')
       if (el) el.dataset.userEdited = '0';
     });
   }
+
+  $('#i-listen')?.addEventListener('input', () => { listenPortEdited = true; });
 
   ['i-ep-host', 'i-ep-port'].forEach((id) => {
     document.getElementById(id)?.addEventListener('input', (e) => {
@@ -1005,10 +1018,14 @@ document.getElementById('rt-restart')
   async function loadNodeIfaces(nid) {
     const sel = $('#iface-select'); if (!sel) return;
     sel.innerHTML = '';
-    if (!nid) { NODE_IFACES = []; setActions({ save:false, scope:'node', target:'' }); return; }
+    setActions({ save:false, scope:'node', target:'' });
+    NODE_IFACES = [];
+    if (!nid) return;
     try {
       const r = await fetch(`/api/nodes/${nid}/interfaces`, { credentials:'same-origin', cache:'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
       const j = await r.json();
+      if (IFACE_SCOPE !== 'node' || IFACE_NODE !== nid) return;
       NODE_IFACES = Array.isArray(j.interfaces) ? j.interfaces : [];
       sel.innerHTML = NODE_IFACES.map(it => `<option value="${it.name}">${it.name}</option>`).join('');
       if (sel.options.length) {
@@ -1102,27 +1119,41 @@ document.getElementById('rt-restart')
 
 
   async function loadIfaceNode(name) {
-    clearEndpointEdits();
+    const nid = IFACE_NODE;
     const meta = { ...(NODE_IFACES.find(x => x.name === name) || { name }) };
-    if (IFACE_NODE && name) {
+    clearEndpointEdits();
+    listenPortEdited = false;
+    setActions({ save:false, scope:'node', target:name });
+    if (nid && name) {
       try {
         const r = await fetch(
-          `/api/nodes/${IFACE_NODE}/iface/${encodeURIComponent(name)}/endpoint-default`,
+          `/api/nodes/${nid}/iface/${encodeURIComponent(name)}/endpoint-default`,
           { credentials: 'same-origin', cache: 'no-store' }
         );
-        if (r.ok) Object.assign(meta, await r.json());
+        if (r.ok) {
+          const endpoint = await r.json();
+          // The actual listen port comes from the agent's interface list.
+          delete endpoint.listen_port;
+          Object.assign(meta, endpoint);
+        }
       } catch (e) { console.error(e); }
     }
+    if (IFACE_SCOPE !== 'node' || IFACE_NODE !== nid || $('#iface-select')?.value !== name) return;
     const idx = NODE_IFACES.findIndex(x => x.name === name);
     if (idx >= 0) NODE_IFACES[idx] = { ...NODE_IFACES[idx], ...meta };
     ifaceView(meta);
-    setActions({ save:false, scope:'node', target:name });
+    setActions({ save:idx >= 0, scope:'node', target:name });
   }
 
   async function refreshIfaceStatusNode() {
+    const nid = IFACE_NODE;
+    if (!nid || savingNodePort) return;
+    const revision = nodePortRevision;
     try {
-      const r = await fetch(`/api/nodes/${IFACE_NODE}/interfaces`, { credentials:'same-origin', cache:'no-store' });
+      const r = await fetch(`/api/nodes/${nid}/interfaces`, { credentials:'same-origin', cache:'no-store' });
+      if (!r.ok) return;
       const j = await r.json();
+      if (IFACE_SCOPE !== 'node' || IFACE_NODE !== nid || savingNodePort || revision !== nodePortRevision) return;
       const prev = new Map(NODE_IFACES.map((x) => [x.name, x]));
       NODE_IFACES = (Array.isArray(j.interfaces) ? j.interfaces : []).map((it) => {
         const old = prev.get(it.name);
@@ -1152,6 +1183,7 @@ document.getElementById('rt-restart')
       statusPollLocal();
     } else {
       await loadNodesIface();
+      if (IFACE_SCOPE !== 'node') return;
       IFACE_NODE = Number($('#iface-node')?.value || 0) || null;
       await loadNodeIfaces(IFACE_NODE);
       statusPollNode();
@@ -1198,9 +1230,59 @@ document.getElementById('rt-restart')
     statusPollNode();
   });
 
+  async function saveNodeListenPort(name) {
+    const nid = IFACE_NODE;
+    const portInput = $('#i-listen');
+    const port = portInput.valueAsNumber;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      toast('Listen port must be an integer between 1 and 65535.', 'error');
+      portInput.focus();
+      return;
+    }
+    const isSelected = () => IFACE_SCOPE === 'node' && IFACE_NODE === nid && $('#iface-select')?.value === name;
+    if (savingNodePort || !nid || !isSelected()) return;
+    const current = NODE_IFACES.find(item => item.name === name);
+    if (!current) return;
+
+    const confirmed = Number(current.listen_port) === port || await window.wgConfirm({
+      title: `Change ${name} to UDP port ${port}?`,
+      body: 'Allow the new UDP port in your firewall. Clients using the old port will need an updated endpoint.',
+      okText: 'Save listen port',
+    });
+    if (!confirmed || savingNodePort || !isSelected()) return;
+
+    savingNodePort = true;
+    nodePortRevision += 1;
+    setActions({ save:true, scope:'node', target:name });
+    portInput.disabled = true;
+    try {
+      await jfetch(`/api/nodes/${nid}/iface/${encodeURIComponent(name)}/listen-port`, {
+        method: 'POST',
+        body: { listen_port: port },
+      });
+      toast(`UDP listen port saved on ${name}.`, 'success');
+      if (isSelected()) {
+        const updated = NODE_IFACES.find(item => item.name === name);
+        if (updated) updated.listen_port = port;
+        await loadIfaceNode(name);
+      }
+    } catch (e) {
+      toast('Save failed: ' + e.message, 'error');
+    } finally {
+      savingNodePort = false;
+      if (IFACE_SCOPE === 'node') {
+        const target = $('#iface-select')?.value;
+        setActions({ save:!!target, scope:'node', target });
+      }
+    }
+  }
+
   $('#iface-save')?.addEventListener('click', async () => {
-    if (IFACE_SCOPE !== 'local') return; 
     const iid = $('#iface-select')?.value; if (!iid) return;
+    if (IFACE_SCOPE === 'node') {
+      await saveNodeListenPort(iid);
+      return;
+    }
     const payload = {
       listen_port: Number($('#i-listen')?.value || 0) || null,
       dns:   ($('#i-dns')?.value || '').trim() || null,
@@ -1305,6 +1387,7 @@ document.getElementById('rt-restart')
     target.value     = source.value;
   }
   window.syncIfLogSelector = syncIfLogSelector;
+  })();
 })();
 
 (function ifaceLogs() {

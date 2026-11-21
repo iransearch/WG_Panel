@@ -341,8 +341,13 @@
           <input class="nodes-input" name="name" maxlength="64" placeholder="Defaults to the domain" />
         </label>
       </div>
+      <label class="nodes-field">
+        <span>AmneziaWG listen port (UDP)</span>
+        <input class="nodes-input" name="awg_port" type="number" value="51820" min="1" max="65535" required />
+        <small>Allow this UDP port in the server firewall for VPN clients.</small>
+      </label>
       <details class="nodes-provision-ports">
-        <summary>Ports</summary>
+        <summary>SSH and API ports</summary>
         <div class="nodes-provision-fields">
           <label class="nodes-field">
             <span>SSH (TCP)</span>
@@ -351,10 +356,6 @@
           <label class="nodes-field">
             <span>Node API (TCP)</span>
             <input class="nodes-input" name="node_port" type="number" value="8443" min="1" max="65535" required />
-          </label>
-          <label class="nodes-field">
-            <span>AmneziaWG (UDP)</span>
-            <input class="nodes-input" name="awg_port" type="number" value="51820" min="1" max="65535" required />
           </label>
         </div>
       </details>

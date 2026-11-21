@@ -279,9 +279,8 @@ body.dark .nodes-confirm {
 .nodes-provision-dialog::backdrop { background: rgba(7, 10, 18, .65); }
 .nodes-provision-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .nodes-provision-ports summary { cursor: pointer; margin-bottom: 8px; }
-.nodes-provision-ports .nodes-provision-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .nodes-provision-help, .nodes-provision-error { font-size: 12px; margin: 0; }
 .nodes-provision-help { color: var(--n-muted); }
 @media (max-width: 520px) {
-  .nodes-provision-fields, .nodes-provision-ports .nodes-provision-fields { grid-template-columns: 1fr; }
+  .nodes-provision-fields { grid-template-columns: 1fr; }
 }

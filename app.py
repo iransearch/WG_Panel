@@ -16169,6 +16169,62 @@ def node_iface_available_ips(nid, name):
     return jsonify(node_get(n, f'/api/iface/{name}/available_ips', timeout=8))
 
 
+@app.post('/api/nodes/<int:nid>/iface/<name>/listen-port')
+@admin_required
+def api_node_iface_listen_port(nid, name):
+    csrf.protect()
+
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', name) or name in {'.', '..'}:
+        return jsonify(error='invalid_iface', detail='Invalid interface name.'), 400
+    data = request.get_json(silent=True)
+    port = data.get('listen_port') if isinstance(data, dict) else None
+    if type(port) is not int or not 1 <= port <= 65535:
+        return jsonify(error='invalid_listen_port',
+                       detail='Listen port must be an integer between 1 and 65535.'), 400
+
+    # Serialize the remote write and mirror update for panel requests to this node.
+    node = db.session.execute(
+        db.select(Node).where(Node.id == nid).with_for_update()
+    ).scalar_one_or_none()
+    if node is None:
+        return jsonify(error='node_not_found', detail='Node was not found.'), 404
+    try:
+        result = node_post(node, f'/api/iface/{name}/listen-port', {'listen_port': port}, timeout=30)
+    except requests.HTTPError as exc:
+        upstream = exc.response
+        status = upstream.status_code if upstream is not None else None
+        try:
+            body = upstream.json() if upstream is not None else {}
+        except ValueError:
+            body = {}
+        if status == 405 or (status == 404 and not (isinstance(body, dict) and body.get('error'))):
+            return jsonify(error='node_update_required',
+                           detail='Update the node agent to enable listen port changes.'), 409
+        if isinstance(body, dict) and body.get('error'):
+            return jsonify(error=body['error'], detail=body.get('detail') or 'The node rejected the port change.'), (
+                status if status in {400, 404, 409} else 502
+            )
+        return jsonify(error='node_listen_port_failed', detail='The node rejected the port change.'), 502
+    except requests.RequestException:
+        return jsonify(error='node_unreachable',
+                       detail='Could not reach the node. Refresh the interface before retrying.'), 502
+
+    if not isinstance(result, dict) or result.get('ok') is not True or result.get('listen_port') != port:
+        return jsonify(error='invalid_node_response', detail='The node did not confirm the listen port.'), 502
+
+    mirror = InterfaceConfig.query.filter_by(name=f'n{nid}:{name}').first()
+    if mirror is not None:
+        mirror.listen_port = port
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception('Could not sync listen port for node %s interface %s', nid, name)
+        return jsonify(error='mirror_sync_failed',
+                       detail='Port saved on the node. Retry to sync it in the panel.'), 500
+    return jsonify(result)
+
+
 @app.post('/api/nodes/<int:nid>/iface/<name>/<action>')
 @login_required
 def node_iface_toggle(nid, name, action):
