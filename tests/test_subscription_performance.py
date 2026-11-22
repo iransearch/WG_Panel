@@ -394,13 +394,93 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             )
             self.assertEqual(replay.status_code, 200, replay.json)
             self.assertEqual(replay.json, result.json)
-            self.assertEqual(inventory.call_count, 1)
+            self.assertEqual(inventory.call_count, 2)
+            self.assertEqual(install_local.call_count, 2)
+            self.assertEqual(install_node.call_count, 3)
 
             feed = self.client.get(urlsplit(result.json['subscription']['feed_url']).path)
             self.assertEqual(feed.status_code, 200, feed.get_data(as_text=True))
             self.assertEqual([urlsplit(uri).netloc for uri in feed.get_data(as_text=True).splitlines()],
                              ['wg0.example.test:51820', 'wg1.example.test:51821',
                               '198.51.100.23:52611', '198.51.100.23:52612'])
+
+    def test_irspeedy_all_adds_missing_node_once_to_an_existing_local_subscription(self):
+        wg0, wg1 = self.add_irspeedy_interfaces()
+        node = Node(name='Edge', base_url='https://node.example.test', api_key='node')
+        db.session.add(node)
+        db.session.commit()
+        headers = {**self.headers, 'Idempotency-Key': '9' * 64}
+        path = '/api/irspeedy/subscriptions'
+        local_ids = [wg0.id, wg1.id]
+        discovery_barrier = Barrier(2)
+        remote = [{
+            'name': 'wg0', 'address': '10.64.0.1/14', 'listen_port': 52611,
+            'public_key': b64encode(bytes([72]) * 32).decode(),
+        }]
+
+        def node_get(target, url, **kwargs):
+            if url == '/api/interfaces?fast=1':
+                discovery_barrier.wait(timeout=10)
+            if url in ('/api/interfaces?fast=1', '/api/interfaces'):
+                return {'interfaces': remote}
+            if url == '/api/health':
+                return {'public_ipv4': '198.51.100.23'}
+            if url.endswith('/awg-parameters'):
+                return {'parameters': {'Jc': '4'}}
+            self.fail(f'Unexpected Agent request {url}')
+
+        with (
+            patch.object(self.panel, 'node_get', side_effect=node_get),
+            patch.object(self.panel, 'node_post', return_value={'host_cidr': '10.64.0.2/32'}) as install_node,
+            patch.object(self.panel, 'install_local_peer') as install_local,
+            patch.object(self.panel, '_wg_allowed_ips', return_value=set()),
+            patch.object(self.panel, '_wg_runtime_snapshot', return_value=({}, {})),
+            patch.object(self.panel.subprocess, 'check_output',
+                         side_effect=[b64encode(bytes([n]) * 32) for n in range(1, 7)]),
+        ):
+            initial = self.client.post(path, headers=headers, json={
+                'name': 'Existing client', 'time_limit_days': 7, 'data_limit_value': 10,
+                'targets': [{'scope': 'local', 'iface_id': iface_id} for iface_id in local_ids],
+            })
+            self.assertEqual(initial.status_code, 201, initial.json)
+            original = initial.json['subscription']
+            self.assertEqual(original['interface_ids'], local_ids)
+            sub = db.session.get(Subscription, original['id'])
+            original_expiry = sub.expires_at
+            original_peers = {link.peer_id: (link.peer.name, link.peer.public_key) for link in sub.links}
+            db.session.remove()
+
+            def retry():
+                return self.panel.app.test_client().post(path, headers=headers, json={
+                    'targets': 'all', 'name': 'New request', 'time_limit_days': 30, 'data_limit_value': 100,
+                })
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                responses = [pool.submit(retry) for _ in range(2)]
+                results = [response.result(timeout=20) for response in responses]
+            self.assertEqual([result.status_code for result in results], [200, 200],
+                             [result.json for result in results])
+            self.assertEqual(results[0].json, results[1].json)
+            updated = results[0].json['subscription']
+            self.assertEqual(updated['id'], original['id'])
+            self.assertEqual(updated['feed_url'], original['feed_url'])
+            self.assertEqual(updated['interface_ids'][:2], local_ids)
+            self.assertEqual(len(updated['interface_ids']), 3)
+
+            sub = db.session.get(Subscription, original['id'])
+            self.assertEqual(Subscription.query.count(), 1)
+            self.assertEqual(Peer.query.count(), 3)
+            self.assertEqual(sub.expires_at, original_expiry)
+            self.assertEqual(sub.data_limit_value, 10)
+            self.assertEqual({link.peer_id: (link.peer.name, link.peer.public_key) for link in sub.links
+                              if link.peer.iface_id in local_ids}, original_peers)
+            self.assertEqual(install_local.call_count, 2)
+            install_node.assert_called_once()
+
+            feed = self.client.get(urlsplit(original['feed_url']).path)
+            self.assertEqual(feed.status_code, 200, feed.get_data(as_text=True))
+            self.assertEqual([urlsplit(uri).netloc for uri in feed.get_data(as_text=True).splitlines()],
+                             ['wg0.example.test:51820', 'wg1.example.test:51821', '198.51.100.23:52611'])
 
     def test_irspeedy_all_fails_before_creating_peers_when_a_node_is_unreachable(self):
         self.add_irspeedy_interfaces()

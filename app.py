@@ -28921,6 +28921,40 @@ def _irspeedy_subscription_response(sub, status):
     ), status
 
 
+def _expand_irspeedy_subscription(sub, data, inventory):
+    attached = set()
+    links = list(sub.links)
+    for link in links:
+        iface = link.peer.iface if link.peer else None
+        if not iface:
+            continue
+        if _iface_is_node(iface):
+            attached.add(('node', _node_id_from_iface(iface), remote_iface_name(iface)))
+        else:
+            attached.add(('local', iface.id))
+
+    missing = []
+    for target in data['targets']:
+        if target['scope'] == 'node':
+            identity = ('node', target['node_id'], target['iface'])
+        else:
+            identity = ('local', target['iface_id'])
+        if identity not in attached:
+            missing.append(target)
+    if not missing:
+        return _irspeedy_subscription_response(sub, 200)
+
+    revoked = _subscription_access_or_403(sub)
+    if revoked is not None:
+        return revoked
+
+    first_index = max((link.sort_order or 0 for link in links), default=-1) + 1
+    return _provision_subscription_targets(
+        sub, data, missing, sub.token, inventory, first_index=first_index,
+        existing=True,
+    )
+
+
 @app.post('/api/irspeedy/subscriptions')
 @require_api_key_or_login
 def api_irspeedy_subscriptions():
@@ -28946,13 +28980,15 @@ def api_irspeedy_subscriptions():
     ):
         return jsonify(error='local_interface_required'), 400
 
-    existing = Subscription.query.filter_by(token=provision_token).first()
-    if existing:
-        return _irspeedy_subscription_response(existing, 200)
+    all_targets = targets == 'all'
+    if not all_targets:
+        existing = Subscription.query.filter_by(token=provision_token).first()
+        if existing:
+            return _irspeedy_subscription_response(existing, 200)
 
     inventory = {}
     try:
-        if targets == 'all':
+        if all_targets:
             targets = _irspeedy_all_targets(inventory)
         else:
             seen = set()
@@ -28973,7 +29009,13 @@ def api_irspeedy_subscriptions():
     except NodePeerInstallError as exc:
         return jsonify(error=exc.code, detail=exc.detail), exc.status
 
-    return _create_subscription({**data, 'targets': targets}, provision_token, node_inventory=inventory)
+    data = {**data, 'targets': targets}
+    if all_targets:
+        existing = Subscription.query.filter_by(token=provision_token).with_for_update().first()
+        if existing:
+            return _expand_irspeedy_subscription(existing, data, inventory)
+
+    return _create_subscription(data, provision_token, node_inventory=inventory, expand_all=all_targets)
 
 
 @app.route('/api/subscriptions', methods=['GET', 'POST'])
@@ -28987,7 +29029,7 @@ def api_subscriptions():
     return _create_subscription(request.get_json(silent=True) or {})
 
 
-def _create_subscription(data, provision_token=None, node_inventory=None):
+def _create_subscription(data, provision_token=None, node_inventory=None, *, expand_all=False):
     created_ts = now_ts()
     sub = Subscription(
         name=(data.get('name')or 'Subscription').strip(),
@@ -29022,23 +29064,34 @@ def _create_subscription(data, provision_token=None, node_inventory=None):
     except IntegrityError:
         db.session.rollback()
         if provision_token:
-            existing = Subscription.query.filter_by(token=provision_token).first()
+            existing_query = Subscription.query.filter_by(token=provision_token)
+            existing = (existing_query.with_for_update() if expand_all else existing_query).first()
             if existing:
+                if expand_all:
+                    return _expand_irspeedy_subscription(existing, data, node_inventory)
                 return _irspeedy_subscription_response(existing, 200)
         raise
-    targets = data.get('targets') or []
+    return _provision_subscription_targets(
+        sub, data, data.get('targets') or [], provision_token, node_inventory,
+    )
+
+
+def _provision_subscription_targets(sub, data, targets, provision_token, node_inventory,
+                                    *, first_index=0, existing=False):
     compensation = PeerCreateCompensation()
     try:
         node_targets = _prepare_subscription_node_targets(targets, node_inventory)
-        for idx, target in enumerate(targets):
+        total = len(sub.links) + len(targets) if existing else len(targets)
+        for idx, target in enumerate(targets, start=first_index):
             _attach_subscription_target(
-                sub, target or {}, data, idx=idx, total=len(targets),
+                sub, target or {}, data, idx=idx, total=total,
                 compensation=compensation, node_targets=node_targets,
             )
-        _sync_all_subscription_peers(sub, rename=True)
+        if not existing:
+            _sync_all_subscription_peers(sub, rename=True)
         db.session.commit()
         if provision_token:
-            return _irspeedy_subscription_response(sub, 201)
+            return _irspeedy_subscription_response(sub, 200 if existing else 201)
         return jsonify(ok=True, subscription=_subscription_row(sub)), 201
     except AddressAllocationError as e:
         cleanup_failures = compensation.rollback()
