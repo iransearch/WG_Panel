@@ -313,6 +313,65 @@ class SubscriptionPerformanceTests(unittest.TestCase):
         db.session.commit()
         return interfaces
 
+    def test_interface_dns_survives_config_reload_and_reaches_subscription(self):
+        iface, _ = self.add_irspeedy_interfaces()
+        iface_id = iface.id
+        path = f'/api/iface/{iface_id}'
+        conf = Path(iface.path)
+        peer_block = '[Peer]\nPublicKey = existing-peer\nAllowedIPs = 10.60.0.2/32'
+        conf.write_text(
+            '[Interface]\nAddress = 10.60.0.1/29\nPrivateKey = fixture\n'
+            'ListenPort = 51820\nDNS = 1.1.1.1\nJc = 4\n\n' + peer_block,
+        )
+        key = b64encode(b'a' * 32).decode()
+        peer = Peer(
+            name='DNS test', iface=iface, public_key=key, private_key=key,
+            address='10.60.0.2/32', status='online',
+        )
+        subscription = Subscription(name='DNS test', token='interface-dns-test')
+        db.session.add(SubscriptionPeer(subscription=subscription, peer=peer))
+        db.session.commit()
+        expected = '8.8.8.8, 8.8.4.4'
+
+        with (
+            patch.object(self.panel, '_iface_up', return_value=False),
+            patch.object(self.panel, '_endpoint_fallback', return_value=''),
+            patch.object(self.panel, '_derive_wg_public_key', return_value=''),
+            patch.object(self.panel, '_wg_runtime_snapshot', return_value=({}, {})),
+            patch.object(self.panel, '_panel_default_dns', return_value='1.0.0.1'),
+        ):
+            response = self.client.post(
+                path, headers=self.headers, json={'dns': expected, 'listen_port': 51820},
+            )
+            self.assertEqual(response.status_code, 200, response.json)
+            saved = conf.read_text()
+            self.assertEqual(saved.count('DNS = '), 1)
+            self.assertIn(f'DNS = {expected}\n', saved.partition('[Peer]')[0])
+            self.assertTrue(saved.endswith(peer_block))
+
+            self.panel._copy_local_iface_from_parsed(iface, self.panel.find_iface(str(conf)))
+            db.session.commit()
+            self.assertEqual(self.client.get(path, headers=self.headers).json['dns'], expected)
+            feed = self.client.get('/s/interface-dns-test/links')
+            self.assertEqual(feed.status_code, 200)
+            self.assertIn('dns=8.8.8.8%2C%208.8.4.4', feed.get_data(as_text=True))
+
+            invalid = self.client.post(path, headers=self.headers, json={'dns': '8.8.8.8\nMTU = 576'})
+            self.assertEqual(invalid.status_code, 400)
+            self.assertEqual(conf.read_text(), saved)
+
+            with patch.object(db.session, 'commit', side_effect=RuntimeError('test commit failure')):
+                failed = self.client.post(path, headers=self.headers, json={'dns': '9.9.9.9'})
+            self.assertEqual(failed.status_code, 500)
+            self.assertEqual(conf.read_text(), saved)
+            self.assertEqual(self.client.get(path, headers=self.headers).json['dns'], expected)
+
+            clear = self.client.post(path, headers=self.headers, json={'dns': ''})
+            self.assertEqual(clear.status_code, 200, clear.json)
+            self.assertIsNone(self.panel.find_iface(conf).dns)
+            self.assertIsNone(self.client.get(path, headers=self.headers).json['dns'])
+            self.assertIn('dns=1.0.0.1', self.client.get('/s/interface-dns-test/links').get_data(as_text=True))
+
     def test_interface_schema_keeps_existing_client_endpoints(self):
         local, _ = self.add_irspeedy_interfaces()
         iface_id = local.id

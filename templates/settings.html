@@ -1777,9 +1777,10 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
                   <input
                     class="input"
                     id="i-dns"
-                    placeholder="Optional DNS server"
+                    placeholder="8.8.8.8, 8.8.4.4"
+                    aria-describedby="i-dns-help"
                   />
-                  <small>Leave empty to keep the current client default.</small>
+                  <small id="i-dns-help">Separate DNS servers with commas. Leave empty to use the panel default.</small>
                 </div>
 
                 <div class="form-group iface-field-card is-editable">

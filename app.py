@@ -16499,12 +16499,18 @@ def iface_settings(iid):
         updates = {}
 
         if 'dns' in data:
-            dns_value = data.get('dns')
-            updates['dns'] = (
-                str(dns_value).strip()
-                if dns_value not in (None, '')
-                else None
-            )
+            dns_value = data['dns']
+            if dns_value is not None and (
+                not isinstance(dns_value, str)
+                or len(dns_value.splitlines()) > 1
+                or any(char in dns_value for char in '\r\n\x00#')
+            ):
+                raise ValueError('DNS must be a single line of comma-separated values.')
+            dns = (dns_value or '').strip().replace('،', ',')
+            dns = ', '.join(part.strip() for part in dns.split(',') if part.strip())
+            if len(dns) > 128:
+                raise ValueError('DNS must be at most 128 characters.')
+            updates['dns'] = dns or None
 
         if 'mtu' in data:
             updates['mtu'] = optional_int(
@@ -16635,111 +16641,52 @@ def iface_settings(iid):
     }
 
     try:
-        for key, value in updates.items():
-            setattr(iface, key, value)
+        with interface_allocation_lock(iface):
+            db.session.refresh(iface)
+            for key, value in updates.items():
+                setattr(iface, key, value)
+            db.session.flush()
 
-        db.session.flush()
+            conf_path = Path(iface.path) if iface.path else None
+            original = None
+            if conf_path and conf_path.is_file():
+                original = conf_path.read_text(encoding='utf-8', errors='replace')
+                names = {'dns': 'DNS', 'mtu': 'MTU', 'listen_port': 'ListenPort'}
+                managed_keys = {names[key].lower() for key in updates}
+                additions = [
+                    f"{names[key]} = {updates[key]}\n"
+                    for key in names if key in updates and updates[key] is not None
+                ]
+                output = []
+                in_interface = found_interface = False
 
-        conf_path = Path(iface.path) if iface.path else None
-
-        if conf_path and conf_path.is_file():
-            original = conf_path.read_text(
-                encoding='utf-8',
-                errors='replace',
-            )
-
-            lines = original.splitlines(keepends=True)
-            output = []
-            in_interface = False
-            found_interface = False
-
-            managed_keys = {
-                'dns': 'DNS',
-                'mtu': 'MTU',
-                'listenport': 'ListenPort',
-            }
-
-            for raw in lines:
-                stripped = raw.strip()
-
-                if stripped.startswith('[') and stripped.endswith(']'):
-                    if in_interface:
-                    
-                        if 'mtu' in updates and updates['mtu'] is not None:
-                            output.append(f"MTU = {updates['mtu']}\n")
-                        if 'listen_port' in updates:
-                            output.append(
-                                f"ListenPort = {updates['listen_port']}\n"
-                            )
-
-                    in_interface = (
-                        stripped[1:-1].strip().lower()
-                        == 'interface'
-                    )
-                    found_interface = found_interface or in_interface
-                    output.append(raw)
-                    continue
-
-                if in_interface and '=' in stripped:
-                    key = stripped.split('=', 1)[0].strip().lower()
-
-                    remove = (
-                        (key == 'dns' and 'dns' in updates)
-                        or (key == 'mtu' and 'mtu' in updates)
-                        or (
-                            key == 'listenport'
-                            and 'listen_port' in updates
-                        )
-                    )
-
-                    if remove:
+                for raw in original.splitlines(keepends=True):
+                    line = raw.partition('#')[0].strip()
+                    if line.startswith('[') and line.endswith(']'):
+                        if in_interface:
+                            output.extend(additions)
+                        in_interface = line[1:-1].strip().lower() == 'interface'
+                        found_interface = found_interface or in_interface
+                    elif in_interface and '=' in line and line.split('=', 1)[0].strip().lower() in managed_keys:
                         continue
+                    output.append(raw)
 
-                output.append(raw)
-
-            if in_interface:
-            
-                if 'mtu' in updates and updates['mtu'] is not None:
-                    output.append(f"MTU = {updates['mtu']}\n")
-                if 'listen_port' in updates:
-                    output.append(
-                        f"ListenPort = {updates['listen_port']}\n"
-                    )
-
-            if not found_interface:
-                raise RuntimeError(
-                    f'{conf_path} does not contain an [Interface] section.'
-                )
-
-            new_text = ''.join(output)
-
-            fd, temp_name = tempfile.mkstemp(
-                prefix=f'.{conf_path.name}.',
-                dir=str(conf_path.parent),
-                text=True,
-            )
+                if not found_interface:
+                    raise RuntimeError(f'{conf_path} does not contain an [Interface] section.')
+                if in_interface and additions:
+                    if output and not output[-1].endswith('\n'):
+                        output.append('\n')
+                    output.extend(additions)
+                updated = ''.join(output)
+                if updated != original:
+                    _write_conf_atomic(str(conf_path), updated)
 
             try:
-                with os.fdopen(
-                    fd,
-                    'w',
-                    encoding='utf-8',
-                ) as handle:
-                    handle.write(new_text)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-
-                os.chmod(temp_name, 0o600)
-                os.replace(temp_name, conf_path)
-
-            finally:
-                try:
-                    if os.path.exists(temp_name):
-                        os.unlink(temp_name)
-                except OSError:
-                    pass
-
-        db.session.commit()
+                db.session.commit()
+            except Exception:
+                if original is not None and updated != original:
+                    _write_conf_atomic(str(conf_path), original)
+                raise
 
     except Exception as exc:
         db.session.rollback()
