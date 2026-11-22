@@ -1,15 +1,18 @@
 import os
 from base64 import b64encode
+from concurrent.futures import ThreadPoolExecutor
 from gzip import decompress
 from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
 from subprocess import TimeoutExpired
+from threading import Barrier, get_ident
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
+from requests import ConnectionError
 from sqlalchemy import event, inspect
 
 from models import AdminAccount, InterfaceConfig, Node, OperationEvent, Peer, Subscription, SubscriptionPeer, db
@@ -298,7 +301,7 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             ([{'scope': 'local', 'iface': 'wg0'}, {'scope': 'local', 'iface': 'missing'}],
              404, 'local_interface_not_found'),
             ([{'scope': 'local', 'iface': 'wg0'}, {'scope': 'node', 'iface': 'wg1'}],
-             400, 'local_interface_required'),
+             400, 'invalid_node_target'),
         ]:
             with self.subTest(targets=targets), patch.object(self.panel, 'install_local_peer') as install:
                 invalid = self.client.post(
@@ -308,6 +311,192 @@ class SubscriptionPerformanceTests(unittest.TestCase):
                 self.assertEqual(invalid.status_code, status)
                 self.assertEqual(invalid.get_json()['error'], error)
                 install.assert_not_called()
+
+    def test_irspeedy_provisions_a_node_and_all_interfaces_with_one_feed(self):
+        self.add_irspeedy_interfaces()
+        node = Node(name='Node A', base_url='https://node.example.test:8443', api_key='node')
+        disabled = Node(name='Disabled', base_url='https://disabled.example.test', api_key='node', enabled=False)
+        db.session.add_all([node, disabled])
+        db.session.commit()
+        node_id = node.id
+        remote = [
+            {'name': 'wg0', 'address': '10.64.0.1/14', 'listen_port': 52611},
+            {'name': 'wg1', 'address': '10.68.0.1/14', 'listen_port': 52612},
+        ]
+        for row in remote:
+            row['public_key'] = b64encode(bytes([72]) * 32).decode()
+
+        def node_get(target, url, **kwargs):
+            self.assertEqual(target.id, node_id)
+            if url == '/api/interfaces?fast=1':
+                return {'interfaces': remote}
+            if url == '/api/interfaces':
+                return {'interfaces': remote}
+            if url == '/api/health':
+                return {'public_ipv4': '198.51.100.23'}
+            if url.endswith('/awg-parameters'):
+                return {'parameters': {'Jc': '4'}}
+            self.fail(f'Unexpected Agent request {url}')
+
+        with (
+            patch.object(self.panel, 'node_get', side_effect=node_get) as inventory,
+            patch.object(self.panel, 'node_post', side_effect=[
+                {'host_cidr': '10.64.0.2/32'},
+                {'host_cidr': '10.64.0.3/32'},
+                {'host_cidr': '10.68.0.2/32'},
+            ]) as install_node,
+            patch.object(self.panel, 'install_local_peer') as install_local,
+            patch.object(self.panel, '_wg_allowed_ips', return_value=set()),
+            patch.object(self.panel.subprocess, 'check_output',
+                         side_effect=[b64encode(bytes([n]) * 32) for n in range(1, 11)]),
+        ):
+            capability = self.client.get(
+                f'/api/irspeedy/capabilities?node_id={node_id}&iface=wg0',
+                headers=self.headers,
+            )
+            self.assertEqual(capability.status_code, 200, capability.json)
+            self.assertEqual(capability.json['server_cidr'], '10.64.0.1/14')
+            self.assertIsNone(capability.json['iface_id'])
+            capability = self.client.get('/api/irspeedy/capabilities?iface=all', headers=self.headers)
+            self.assertEqual([t['scope'] for t in capability.json['targets']], ['local', 'local', 'node', 'node'])
+
+            single = self.client.post(
+                '/api/irspeedy/subscriptions',
+                headers={**self.headers, 'Idempotency-Key': 'd' * 64},
+                json={'name': 'Node client', 'node_id': node_id, 'iface': 'wg0'},
+            )
+            self.assertEqual(single.status_code, 201, single.json)
+            self.assertEqual(len(single.json['subscription']['interface_ids']), 1)
+
+            all_headers = {**self.headers, 'Idempotency-Key': 'e' * 64}
+            inventory.reset_mock()
+            result = self.client.post(
+                '/api/irspeedy/subscriptions', headers=all_headers,
+                json={'name': 'All interfaces', 'targets': 'all', 'include_internal_network': True},
+            )
+            self.assertEqual(result.status_code, 201, result.json)
+            inventory.assert_called_once_with(node, '/api/interfaces?fast=1', timeout=10)
+            self.assertEqual(install_local.call_count, 2)
+            self.assertEqual([call.args[2]['iface'] for call in install_node.call_args_list],
+                             ['wg0', 'wg0', 'wg1'])
+
+            sub = db.session.get(Subscription, result.json['subscription']['id'])
+            peers = [link.peer for link in sorted(sub.links, key=lambda link: link.sort_order)]
+            self.assertEqual([peer.iface.name for peer in peers],
+                             ['wg0', 'wg1', f'n{node_id}:wg0', f'n{node_id}:wg1'])
+            self.assertEqual([peer.address for peer in peers],
+                             ['10.60.0.2/29', '10.60.1.2/29', '10.64.0.3/14', '10.68.0.2/14'])
+            self.assertTrue(peers[0].allowed_ips.endswith('10.60.0.0/29'))
+            self.assertTrue(peers[2].allowed_ips.endswith('10.64.0.0/14'))
+
+            replay = self.client.post(
+                '/api/irspeedy/subscriptions', headers=all_headers, json={'targets': 'all'},
+            )
+            self.assertEqual(replay.status_code, 200, replay.json)
+            self.assertEqual(replay.json, result.json)
+            self.assertEqual(inventory.call_count, 1)
+
+            feed = self.client.get(urlsplit(result.json['subscription']['feed_url']).path)
+            self.assertEqual(feed.status_code, 200, feed.get_data(as_text=True))
+            self.assertEqual([urlsplit(uri).netloc for uri in feed.get_data(as_text=True).splitlines()],
+                             ['wg0.example.test:51820', 'wg1.example.test:51821',
+                              '198.51.100.23:52611', '198.51.100.23:52612'])
+
+    def test_irspeedy_all_fails_before_creating_peers_when_a_node_is_unreachable(self):
+        self.add_irspeedy_interfaces()
+        db.session.add(Node(name='Unreachable', base_url='https://unreachable.example.test', api_key='node'))
+        db.session.commit()
+        with (
+            patch.object(self.panel, 'node_get', side_effect=ConnectionError),
+            patch.object(self.panel, 'node_post') as install_node,
+            patch.object(self.panel, 'install_local_peer') as install_local,
+        ):
+            response = self.client.post(
+                '/api/irspeedy/subscriptions',
+                headers={**self.headers, 'Idempotency-Key': '5' * 64},
+                json={'targets': 'all'},
+            )
+            self.assertEqual(response.status_code, 502)
+            self.assertEqual(response.json['error'], 'node_unreachable')
+            install_local.assert_not_called()
+            install_node.assert_not_called()
+        self.assertEqual(Subscription.query.count(), 0)
+
+    def test_irspeedy_all_rolls_back_node_peers_when_a_later_install_fails(self):
+        node = Node(name='Rollback node', base_url='https://rollback.example.test', api_key='node')
+        db.session.add(node)
+        db.session.commit()
+        with (
+            patch.object(self.panel, 'node_get', return_value={'interfaces': [
+                {'name': 'awg0', 'address': '10.64.0.1/14', 'listen_port': 52000},
+                {'name': 'awg1', 'address': '10.68.0.1/14', 'listen_port': 52001},
+            ]}),
+            patch.object(self.panel, 'node_post', side_effect=[
+                {'host_cidr': '10.64.0.2/32'}, ConnectionError('Agent disconnected'),
+            ]),
+            patch.object(self.panel, 'node_delete', return_value={
+                'ok': True, 'config_removed': True, 'runtime_removed': True,
+            }) as remove,
+            patch.object(self.panel.subprocess, 'check_output', side_effect=[b'priv1', b'pub1', b'priv2', b'pub2']),
+        ):
+            response = self.client.post(
+                '/api/irspeedy/subscriptions',
+                headers={**self.headers, 'Idempotency-Key': '8' * 64},
+                json={'targets': 'all'},
+            )
+            self.assertEqual(response.status_code, 502)
+            self.assertTrue(response.json['cleanup_complete'])
+            self.assertEqual([call.kwargs['payload']['public_key'] for call in remove.call_args_list],
+                             ['pub2', 'pub1'])
+        self.assertEqual(Subscription.query.count(), 0)
+        self.assertEqual(Peer.query.count(), 0)
+        self.assertEqual(InterfaceConfig.query.count(), 0)
+
+    def test_irspeedy_concurrent_first_use_of_a_node_interface_shares_one_mirror(self):
+        node = Node(name='Concurrent node', base_url='https://race.example.test', api_key='node')
+        db.session.add(node)
+        db.session.commit()
+        node_id = node.id
+        mirror_name = f'n{node_id}:race0'
+        engine = db.engine
+        db.session.remove()
+        barrier = Barrier(2)
+        threads_seen = set()
+
+        def synchronize_first_lookup(conn, cursor, statement, params, context, executemany):
+            thread_id = get_ident()
+            if thread_id not in threads_seen and 'WHERE interface_config.name =' in statement and mirror_name in str(params):
+                threads_seen.add(thread_id)
+                barrier.wait(timeout=10)
+
+        event.listen(engine, 'after_cursor_execute', synchronize_first_lookup)
+        try:
+            with (
+                patch.object(self.panel, 'node_get', return_value={'interfaces': [
+                    {'name': 'race0', 'address': '10.72.0.1/14', 'listen_port': 52000},
+                ]}),
+                patch.object(self.panel, 'node_post', side_effect=[
+                    {'host_cidr': '10.72.0.2/32'}, {'host_cidr': '10.72.0.3/32'},
+                ]),
+                patch.object(self.panel.subprocess, 'check_output', side_effect=[b'priv1', b'pub1', b'priv2', b'pub2']),
+            ):
+                def create(token):
+                    return self.panel.app.test_client().post(
+                        '/api/irspeedy/subscriptions',
+                        headers={**self.headers, 'Idempotency-Key': token * 64},
+                        json={'node_id': node_id, 'iface': 'race0'},
+                    )
+
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(create, ('6', '7')))
+        finally:
+            event.remove(engine, 'after_cursor_execute', synchronize_first_lookup)
+
+        self.assertEqual([result.status_code for result in results], [201, 201],
+                         [result.json for result in results])
+        self.assertEqual(InterfaceConfig.query.filter_by(name=mirror_name).count(), 1)
+        self.assertEqual(Subscription.query.count(), 2)
+        self.assertEqual({peer.address for peer in Peer.query.all()}, {'10.72.0.2/14', '10.72.0.3/14'})
 
     def test_irspeedy_removes_both_peers_when_second_install_fails(self):
         interfaces = self.add_irspeedy_interfaces()

@@ -13,6 +13,7 @@ from flask import (
 )
 
 from sqlalchemy.exc import OperationalError, IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from cryptography.fernet import Fernet, InvalidToken
 from pathlib import Path
 from functools import wraps
@@ -12292,20 +12293,21 @@ def ensure_node_mirror_iface(node, iface_name, remote_iface=None, *, mtu=None, d
         port = 51820
 
     if not iface:
-        iface = InterfaceConfig(
-            name=db_iface_name,
-            path=f'/etc/amnezia/amneziawg/{iface_name}.conf',
-            address=address or '10.0.0.1/24',
-            listen_port=port,
-            private_key='(remote)',
-            mtu=remote_iface.get('mtu') or mtu,
-            dns=remote_iface.get('dns') or dns,
-            node_id=node.id,
+        # A second request may have created the mirror since our lookup.
+        db.session.execute(
+            pg_insert(InterfaceConfig).values(
+                name=db_iface_name,
+                path=f'/etc/amnezia/amneziawg/{iface_name}.conf',
+                address=address or '10.0.0.1/24',
+                listen_port=port,
+                private_key='(remote)',
+                public_key=_valid_wg_key(remote_iface.get('public_key')) or None,
+                mtu=remote_iface.get('mtu') or mtu,
+                dns=remote_iface.get('dns') or dns,
+                node_id=node.id,
+            ).on_conflict_do_nothing(index_elements=['name'])
         )
-        _assign_iface_public_key(iface, remote_iface.get('public_key'))
-        db.session.add(iface)
-        db.session.flush()
-        return iface
+        iface = InterfaceConfig.query.filter_by(name=db_iface_name).one()
 
     changed = False
     if address and iface.address != address:
@@ -27337,7 +27339,83 @@ def _peer_payload_subscription(sub,target,data,idx=0,total=1,):
         'phone_number': (getattr(sub,'phone_number','',)or ''),
         'telegram_id': (getattr(sub,'telegram_id','',)or ''),}
 
-def _create_subscription_peer(target, payload, compensation=None):
+_SUBSCRIPTION_IFACE_NAME = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}')
+
+
+def _subscription_node_key(target):
+    node_id = target.get('node_id')
+    name = target.get('iface')
+    if (not isinstance(node_id, (int, str)) or not re.fullmatch(r'[0-9]{1,10}', str(node_id))
+            or not 0 < int(node_id) <= 2147483647
+            or not isinstance(name, str) or not _SUBSCRIPTION_IFACE_NAME.fullmatch(name)):
+        raise NodePeerInstallError('invalid_node_target', 400, 'A valid node_id and iface are required.')
+    return int(node_id), name
+
+
+def _subscription_node_inventory(node):
+    try:
+        payload = node_get(node, '/api/interfaces?fast=1', timeout=10)
+    except requests.RequestException as exc:
+        raise NodePeerInstallError('node_unreachable', 502, f'Could not list interfaces on node {node.id}.') from exc
+
+    rows = payload.get('interfaces') if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise NodePeerInstallError('invalid_node_interfaces', 502,
+                                   f'Node {node.id} returned an invalid interface list.')
+
+    interfaces = {}
+    for row in rows:
+        name = (row.get('name') or row.get('iface')) if isinstance(row, dict) else None
+        if not isinstance(name, str) or not _SUBSCRIPTION_IFACE_NAME.fullmatch(name) or name in interfaces:
+            raise NodePeerInstallError('invalid_node_interfaces', 502,
+                                       f'Node {node.id} returned an invalid interface entry.')
+        address = row.get('address') or row.get('server_cidr')
+        port = row.get('listen_port')
+        if (not isinstance(address, str) or not _first_cidr(address)
+                or not re.fullmatch(r'[0-9]{1,5}', str(port)) or not 1 <= int(port) <= 65535):
+            raise NodePeerInstallError('invalid_node_interface', 502,
+                                       f'Node {node.id} did not supply a valid CIDR and port for {name}.')
+        interfaces[name] = {**row, 'address': address, 'listen_port': int(port)}
+    return interfaces
+
+
+def _subscription_node(node_id):
+    node = db.session.get(Node, node_id)
+    if node is None:
+        raise NodePeerInstallError('node_not_found', 404, f'Node {node_id} was not found.')
+    if not node.enabled:
+        raise NodePeerInstallError('node_disabled', 409, f'Node {node_id} is disabled.')
+    return node
+
+
+def _subscription_node_interface(inventory, node_id, name):
+    remote = inventory.get(name)
+    if remote is None:
+        raise NodePeerInstallError('node_interface_not_found', 404,
+                                   f'Interface {name} was not found on node {node_id}.')
+    return remote
+
+
+def _prepare_subscription_node_targets(targets, inventory=None):
+    inventory = {} if inventory is None else inventory
+    keys = {
+        _subscription_node_key(target) for target in targets
+        if target and not target.get('peer_id') and (target.get('scope') or '').lower() == 'node'
+    }
+
+    prepared = {}
+    # Take mirror write locks in the same order for all transactions.
+    for node_id, name in sorted(keys):
+        node = _subscription_node(node_id)
+        if node_id not in inventory:
+            inventory[node_id] = _subscription_node_inventory(node)
+        remote = _subscription_node_interface(inventory[node_id], node_id, name)
+        mirror = ensure_node_mirror_iface(node, name, remote)
+        prepared[(node_id, name)] = (node, mirror)
+    return prepared
+
+
+def _create_subscription_peer(target, payload, compensation=None, *, node_target=None):
     """Create one subscription inbound through the shared allocation contract.
 
     A target's generic `address` field is treated as a hint only: older
@@ -27353,27 +27431,8 @@ def _create_subscription_peer(target, payload, compensation=None):
     created_ts = now_ts()
 
     if scope == 'node':
-        nid = _sub_int(target.get('node_id'))
-        iface_name = (target.get('iface') or '').strip()
-        if not nid or not iface_name:
-            raise ValueError('node_id and iface are required for node target')
-
-        node = db.session.get(Node, nid) or abort(404)
-
-        iface = ensure_node_mirror_iface(
-            node, iface_name,
-            {
-                'listen_port': _sub_int(target.get('listen_port'), 51820),
-                'address': target.get('server_cidr') or target.get('interface_address'),
-                'mtu': payload.get('mtu'),
-                'dns': payload.get('dns'),
-                'public_key': target.get('public_key'),
-            },
-            listen_port=_sub_int(target.get('listen_port'), 51820),
-            server_cidr=target.get('server_cidr') or target.get('interface_address'),
-            mtu=payload.get('mtu'),
-            dns=payload.get('dns'),
-        )
+        node, iface = node_target
+        iface_name = target['iface']
 
         if compensation is not None:
             compensation.register_node(node, pub)
@@ -27446,7 +27505,7 @@ def _create_subscription_peer(target, payload, compensation=None):
 
     return peer
 
-def _attach_subscription_target(sub, target, data, idx=0, total=1, compensation=None):
+def _attach_subscription_target(sub, target, data, idx=0, total=1, compensation=None, *, node_targets):
     if target.get('peer_id'):
         peer = db.session.get(Peer, int(target.get('peer_id'))) or abort(404)
         existing = SubscriptionPeer.query.filter_by(peer_id=peer.id).first()
@@ -27459,8 +27518,12 @@ def _attach_subscription_target(sub, target, data, idx=0, total=1, compensation=
             db.session.add(link)
             db.session.flush()
     else:
+        node_target = None
+        if (target.get('scope') or '').lower() == 'node':
+            node_target = node_targets[_subscription_node_key(target)]
+            target = {**target, 'server_cidr': node_target[1].address}
         payload = _peer_payload_subscription(sub, target, data, idx=idx, total=total)
-        peer = _create_subscription_peer(target, payload, compensation=compensation)
+        peer = _create_subscription_peer(target, payload, compensation=compensation, node_target=node_target)
         link = SubscriptionPeer(subscription=sub, peer=peer, owned=True)
         db.session.add(link)
         db.session.flush()
@@ -28785,7 +28848,7 @@ def _subscription_page():
 
 def _irspeedy_local_interface(name, legacy_id):
     if name is not None:
-        if not isinstance(name, str) or not re.fullmatch(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,14}', name):
+        if not isinstance(name, str) or not _SUBSCRIPTION_IFACE_NAME.fullmatch(name):
             return None
         iface = InterfaceConfig.query.filter_by(name=name).first()
     elif type(legacy_id) is int and 0 < legacy_id <= 2147483647:
@@ -28799,14 +28862,51 @@ def _irspeedy_local_interface(name, legacy_id):
 IRSPEEDY_MAX_LOCAL_TARGETS = 2
 
 
+def _irspeedy_all_targets(inventory):
+    targets = []
+    for iface in InterfaceConfig.query.filter_by(node_id=None).order_by(InterfaceConfig.name):
+        if not _iface_is_node(iface):
+            address = interface_ip_interface(iface, sync_address=False)
+            targets.append({'scope': 'local', 'iface': iface.name, 'iface_id': iface.id,
+                            'server_cidr': str(address) if address is not None else ''})
+    for node in Node.query.filter_by(enabled=True).order_by(Node.id):
+        interfaces = _subscription_node_inventory(node)
+        inventory[node.id] = interfaces
+        targets.extend(
+            {'scope': 'node', 'node_id': node.id, 'iface': name}
+            for name in sorted(interfaces)
+        )
+    if not targets:
+        raise NodePeerInstallError('no_interfaces', 404, 'No local or enabled node interfaces were found.')
+    return targets
+
+
 @app.get('/api/irspeedy/capabilities')
 @require_api_key_or_login
 def api_irspeedy_capabilities():
-    iface = _irspeedy_local_interface(request.args.get('iface'), request.args.get('iface_id', type=int))
-    if iface is None:
-        return jsonify(error='local_interface_not_found'), 404
-    return jsonify(version=1, iface=iface.name, iface_id=iface.id, scope='local',
-                   max_local_targets=IRSPEEDY_MAX_LOCAL_TARGETS)
+    name = request.args.get('iface')
+    node_id = request.args.get('node_id')
+    capabilities = {'version': 1, 'max_local_targets': IRSPEEDY_MAX_LOCAL_TARGETS,
+                    'supports_node_targets': True, 'supports_all_targets': True}
+    try:
+        if node_id is not None:
+            node_id, name = _subscription_node_key({'node_id': node_id, 'iface': name})
+            node = _subscription_node(node_id)
+            remote = _subscription_node_interface(_subscription_node_inventory(node), node_id, name)
+            mirror = InterfaceConfig.query.filter_by(name=f'n{node_id}:{name}').first()
+            return jsonify(**capabilities, scope='node', node_id=node_id, iface=name,
+                           iface_id=mirror.id if mirror is not None else None,
+                           server_cidr=remote['address'], listen_port=remote['listen_port'])
+        if name == 'all' or request.args.get('scope') == 'all':
+            targets = _irspeedy_all_targets({})
+            return jsonify(**capabilities, scope='all', targets=targets)
+
+        iface = _irspeedy_local_interface(name, request.args.get('iface_id', type=int))
+        if iface is None:
+            return jsonify(error='local_interface_not_found'), 404
+        return jsonify(**capabilities, scope='local', iface=iface.name, iface_id=iface.id)
+    except NodePeerInstallError as exc:
+        return jsonify(error=exc.code, detail=exc.detail), exc.status
 
 
 def _irspeedy_subscription_response(sub, status):
@@ -28831,26 +28931,49 @@ def api_irspeedy_subscriptions():
     if not isinstance(data, dict):
         return jsonify(error='invalid_request'), 400
     targets = data.get('targets')
-    if (not isinstance(targets, list) or not 1 <= len(targets) <= IRSPEEDY_MAX_LOCAL_TARGETS
-            or any(not isinstance(target, dict) or target.get('scope') != 'local'
-                   or target.get('peer_id') for target in targets)):
+    if targets is None:
+        if data.get('iface') == 'all' or data.get('scope') == 'all':
+            if data.get('node_id') is not None:
+                return jsonify(error='invalid_target_selection'), 400
+            targets = 'all'
+        elif data.get('node_id') is not None:
+            targets = [{'scope': 'node', 'node_id': data['node_id'], 'iface': data.get('iface')}]
+
+    if targets != 'all' and (
+        not isinstance(targets, list) or not 1 <= len(targets) <= IRSPEEDY_MAX_LOCAL_TARGETS
+        or any(not isinstance(target, dict) or target.get('scope') not in ('local', 'node')
+               or target.get('peer_id') for target in targets)
+    ):
         return jsonify(error='local_interface_required'), 400
 
     existing = Subscription.query.filter_by(token=provision_token).first()
     if existing:
         return _irspeedy_subscription_response(existing, 200)
 
-    iface_ids = set()
-    for target in targets:
-        iface = _irspeedy_local_interface(target.get('iface'), target.get('iface_id'))
-        if iface is None:
-            return jsonify(error='local_interface_not_found'), 404
-        if iface.id in iface_ids:
-            return jsonify(error='duplicate_local_interface'), 400
-        iface_ids.add(iface.id)
-        # Use the resolved local record even if a client supplied both fields.
-        target['iface_id'] = iface.id
-    return _create_subscription(data, provision_token)
+    inventory = {}
+    try:
+        if targets == 'all':
+            targets = _irspeedy_all_targets(inventory)
+        else:
+            seen = set()
+            for target in targets:
+                if target['scope'] == 'node':
+                    key = _subscription_node_key(target)
+                    if key in seen:
+                        return jsonify(error='duplicate_node_interface'), 400
+                else:
+                    iface = _irspeedy_local_interface(target.get('iface'), target.get('iface_id'))
+                    if iface is None:
+                        return jsonify(error='local_interface_not_found'), 404
+                    key = (None, iface.id)
+                    if key in seen:
+                        return jsonify(error='duplicate_local_interface'), 400
+                    target['iface_id'] = iface.id
+                seen.add(key)
+    except NodePeerInstallError as exc:
+        return jsonify(error=exc.code, detail=exc.detail), exc.status
+
+    return _create_subscription({**data, 'targets': targets}, provision_token, node_inventory=inventory)
 
 
 @app.route('/api/subscriptions', methods=['GET', 'POST'])
@@ -28864,7 +28987,7 @@ def api_subscriptions():
     return _create_subscription(request.get_json(silent=True) or {})
 
 
-def _create_subscription(data, provision_token=None):
+def _create_subscription(data, provision_token=None, node_inventory=None):
     created_ts = now_ts()
     sub = Subscription(
         name=(data.get('name')or 'Subscription').strip(),
@@ -28906,10 +29029,11 @@ def _create_subscription(data, provision_token=None):
     targets = data.get('targets') or []
     compensation = PeerCreateCompensation()
     try:
+        node_targets = _prepare_subscription_node_targets(targets, node_inventory)
         for idx, target in enumerate(targets):
             _attach_subscription_target(
                 sub, target or {}, data, idx=idx, total=len(targets),
-                compensation=compensation,
+                compensation=compensation, node_targets=node_targets,
             )
         _sync_all_subscription_peers(sub, rename=True)
         db.session.commit()
@@ -28976,13 +29100,14 @@ def api_subscription_add_inbounds(sid):
     targets = data.get('targets') or []
     compensation = PeerCreateCompensation()
     try:
+        node_targets = _prepare_subscription_node_targets(targets)
         base = db.session.query(func.max(SubscriptionPeer.sort_order)).filter_by(subscription_id=sub.id).scalar() or 0
         for off, target in enumerate(targets):
             _attach_subscription_target(
                 sub, target or {}, data,
                 idx=base + off + 1,
                 total=len(getattr(sub, 'links', []) or []) + len(targets),
-                compensation=compensation,
+                compensation=compensation, node_targets=node_targets,
             )
         _sync_all_subscription_peers(sub, rename=True)
         db.session.commit()
