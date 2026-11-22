@@ -269,7 +269,7 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             patch.object(self.panel, '_derive_wg_public_key', return_value=''),
         ):
             capability = self.client.get('/api/irspeedy/capabilities?iface=wg1', headers=headers)
-            self.assertEqual(capability.get_json()['max_local_targets'], 2)
+            self.assertEqual(capability.get_json()['max_local_targets'], 10)
             response = self.client.post('/api/irspeedy/subscriptions', headers=headers, json=data)
             self.assertEqual(response.status_code, 201, response.get_json())
             subscription = response.get_json()['subscription']

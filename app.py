@@ -28859,7 +28859,7 @@ def _irspeedy_local_interface(name, legacy_id):
     return iface if iface is not None and not _iface_is_node(iface) else None
 
 
-IRSPEEDY_MAX_LOCAL_TARGETS = 2
+IRSPEEDY_MAX_LOCAL_TARGETS = 10
 
 
 def _irspeedy_all_targets(inventory):
