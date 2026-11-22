@@ -56,7 +56,7 @@ from sqlalchemy import or_, and_, text, inspect, func, event
 from sqlalchemy.orm import joinedload, selectinload
 from flask_compress import Compress
 from flask_wtf.csrf import CSRFProtect, generate_csrf
-from urllib.parse import urlparse, urljoin
+from urllib.parse import quote, urlparse, urljoin
 import secrets
 import pyotp
 import bcrypt
@@ -12686,14 +12686,6 @@ def _rollback_local_created_peer(peer: Peer):
         raise RuntimeError('; '.join(errors))
 
 
-def _rollback_node_created_peer(node, public_key):
-    response = node_delete(node, f'/api/peer/{public_key}') or {}
-    if isinstance(response, dict) and response.get('ok') is False:
-        raise RuntimeError(
-            str(response.get('detail') or response.get('error') or 'node cleanup failed')
-        )
-
-
 class PeerCreateCompensation:
 
     def __init__(self):
@@ -12706,7 +12698,7 @@ class PeerCreateCompensation:
 
     def register_node(self, node, public_key):
         self._actions.append(
-            ('node', public_key, lambda: _rollback_node_created_peer(node, public_key))
+            ('node', public_key, lambda: _delete_peer_on_node(node, public_key))
         )
 
     def rollback(self):
@@ -12754,11 +12746,14 @@ def reapply_peer_external(peer: Peer):
 def remove_peer_everywhere(peer: Peer):
 
     if _peer_is_on_node(peer):
-        _remove_node_peer(peer)
+        node_id = _node_id_from_iface(peer.iface)
+        _remove_node_peer(peer, node_id)
+        peers = _node_peer_rows(node_id, peer.public_key)
     else:
         _remove_local_peer_runtime_and_config(peer)
+        peers = [peer]
 
-    return _delete_peer_rows(peer)
+    return _delete_peer_rows(peers)
 
 
 def _remove_local_peer_runtime_and_config(peer: Peer):
@@ -12783,31 +12778,57 @@ def _remove_local_peer_runtime_and_config(peer: Peer):
         raise PeerRemovalError('config', str(e), 500)
 
 
-def _remove_node_peer(peer: Peer):
-    node = getattr(getattr(peer, 'iface', None), 'node', None)
-    if node is None:
-        raise PeerRemovalError('node', 'The node for this peer is unknown.', 500)
-
+def _delete_peer_on_node(node, public_key):
     try:
-        response = node_delete(node, f'/api/peer/{peer.public_key}') or {}
-    except Exception as e:
-        raise PeerRemovalError('node', str(e), 502)
+        try:
+            response = node_delete(
+                node, '/api/peer', payload={'public_key': public_key}, timeout=45,
+            )
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in {404, 405}:
+                raise
+            if public_key.startswith('/') or '//' in public_key:
+                raise PeerRemovalError('node', 'Update the node agent to delete this peer.', 409) from exc
+            response = node_delete(node, f'/api/peer/{quote(public_key, safe="")}', timeout=45)
+    except requests.HTTPError as exc:
+        try:
+            body = exc.response.json() if exc.response is not None else {}
+        except ValueError:
+            body = {}
+        detail = (body.get('detail') or body.get('error')) if isinstance(body, dict) else None
+        status = exc.response.status_code if exc.response is not None else None
+        raise PeerRemovalError('node', detail or 'The node rejected peer removal.',
+                               409 if status == 409 else 502) from exc
+    except requests.RequestException as exc:
+        raise PeerRemovalError('node', 'Could not reach the node. Retry peer removal.', 502) from exc
 
-    if not isinstance(response, dict):
-        return
-
-    if response.get('ok') is False:
-        raise PeerRemovalError(
-            'node', str(response.get('error') or 'The node reported a failure.'), 502
-        )
+    if not isinstance(response, dict) or response.get('ok') is not True:
+        raise PeerRemovalError('node', 'The node did not confirm peer removal.', 502)
 
     for key, phase in (('runtime_removed', 'runtime'), ('config_removed', 'config')):
-        if key in response and not response.get(key):
-            raise PeerRemovalError(
-                phase,
-                f'The node did not confirm {phase} removal of {peer.public_key}.',
-                502,
-            )
+        if response.get(key) is not True:
+            raise PeerRemovalError(phase, f'The node did not confirm {phase} removal.', 502)
+
+
+def _remove_node_peer(peer: Peer, node_id: int | None):
+    node = db.session.get(Node, node_id) if node_id is not None else None
+    if node is None:
+        raise PeerRemovalError('node', 'The node for this peer is unknown.', 500)
+    _delete_peer_on_node(node, peer.public_key)
+
+
+def _node_peer_rows(node_id, public_key):
+    return (
+        db.session.query(Peer)
+        .join(InterfaceConfig, Peer.iface_id == InterfaceConfig.id)
+        .filter(Peer.public_key == public_key)
+        .filter(or_(
+            InterfaceConfig.node_id == node_id,
+            and_(InterfaceConfig.node_id.is_(None), InterfaceConfig.name.like(f"n{node_id}:%")),
+        ))
+        .all()
+    )
 
 
 def _wg_peer_keys(dev: str) -> set:
@@ -12827,13 +12848,16 @@ def _wg_peer_keys(dev: str) -> set:
     return keys
 
 
-def _delete_peer_rows(peer: Peer):
-
+def _delete_peer_rows(peers):
+    if not peers:
+        return 0
+    peer_ids = [peer.id for peer in peers]
     try:
-        removed_shortlinks = _delete_shortlinks_for_peer_ids([peer.id])
-        SubscriptionPeer.query.filter_by(peer_id=peer.id).delete(synchronize_session=False)
-        PeerEvent.query.filter_by(peer_id=peer.id).delete(synchronize_session=False)
-        db.session.delete(peer)
+        removed_shortlinks = _delete_shortlinks_for_peer_ids(peer_ids)
+        SubscriptionPeer.query.filter(SubscriptionPeer.peer_id.in_(peer_ids)).delete(synchronize_session=False)
+        PeerEvent.query.filter(PeerEvent.peer_id.in_(peer_ids)).delete(synchronize_session=False)
+        for peer in peers:
+            db.session.delete(peer)
         db.session.commit()
         return int(removed_shortlinks or 0)
     except Exception as e:
@@ -13949,40 +13973,32 @@ def node_peer_logs(nid, pub):
         current_app.logger.exception("Node peer logs failed")
         return jsonify(ok=False, error="logs_failed", detail=str(e)), 500
 
-@app.route('/api/nodes/<int:nid>/peer/<path:pub>', methods=['DELETE'])
+@app.delete('/api/nodes/<int:nid>/peer')
+@app.delete('/api/nodes/<int:nid>/peer/<path:pub>')
 @admin_required
-def node_peer_delete(nid, pub):
-    n = Node.query.get_or_404(nid)
+def node_peer_delete(nid, pub=None):
+    if pub is None:
+        csrf.protect()
+        data = request.get_json(silent=True)
+        pub = data.get('public_key') if isinstance(data, dict) else None
+    pub = _valid_wg_key(pub) if isinstance(pub, str) else ''
+    if not pub:
+        return jsonify(ok=False, error='invalid_public_key', detail='Enter a valid peer public key.'), 400
 
-    p = (
-        db.session.query(Peer)
-        .join(InterfaceConfig, Peer.iface_id == InterfaceConfig.id)
-        .filter(Peer.public_key == pub)
-        .filter(or_(
-            InterfaceConfig.name.like(f"n{nid}:%"),
-            InterfaceConfig.node_id == nid
-        ))
-        .first()
-    )
+    node = db.session.get(Node, nid) or abort(404)
+    peers = _node_peer_rows(nid, pub)
 
-    if p is None:
-        try:
-            node_delete(n, f'/api/peer/{pub}')
-        except Exception as e:
-            current_app.logger.exception("Node peer delete failed")
-            return jsonify(error="node_delete_failed", detail=str(e)), 502
-        return jsonify(ok=True, shortlinks_removed=0)
-
-    peer_id = p.id
     try:
-        removed_shortlinks = remove_peer_everywhere(p)
-    except PeerRemovalError as e:
+        _delete_peer_on_node(node, pub)
+        removed_shortlinks = _delete_peer_rows(peers)
+    except PeerRemovalError as exc:
         current_app.logger.error(
-            "node peer delete failed at %s stage for node_id=%s pub=%s: %s", e.phase, nid, pub, e
+            "Node peer delete failed at %s stage for node_id=%s pub=%s: %s", exc.phase, nid, pub, exc,
         )
-        return peer_removal_response(e, peer_id=peer_id)
+        return peer_removal_response(exc, peer_id=peers[0].id if peers else None)
 
     return jsonify(ok=True, shortlinks_removed=removed_shortlinks)
+
 
 def _effective_client_endpoint(peer: Peer) -> str:
 
@@ -17644,7 +17660,7 @@ def node_peers(nid):
     except NodePeerInstallError as exc:
 
         try:
-            _rollback_node_created_peer(n, pub)
+            _delete_peer_on_node(n, pub)
         except Exception:
             current_app.logger.exception('Ambiguous node create cleanup failed for %s', pub)
         db.session.rollback()
@@ -17726,9 +17742,13 @@ def clear_peer_logs(pid):
 @app.route('/nodes', endpoint='nodes', methods=['GET'])
 @login_required
 def nodes():
+    from agent.awg_config import DEFAULT_NODE_ADDRESS, DEFAULT_NODE_INTERFACE
+
     return render_template(
         'nodes.html',
         node_setup_email=_load_panel_settings().get("le_email") or "",
+        node_setup_interface=DEFAULT_NODE_INTERFACE,
+        node_setup_address=DEFAULT_NODE_ADDRESS,
     )
 
 @app.route('/ui/nodes', methods=['GET'])
@@ -19942,7 +19962,7 @@ def peers_create():
         except NodePeerInstallError as e:
             cleanup_failures = []
             try:
-                _rollback_node_created_peer(n, pub)
+                _delete_peer_on_node(n, pub)
             except Exception as cleanup_exc:
                 cleanup_failures.append({
                     'scope': 'node', 'public_key': pub, 'detail': str(cleanup_exc),
@@ -20936,7 +20956,7 @@ def panel_peers_bulk():
 
                 if pub:
                     try:
-                        node_delete(n, f"/api/peer/{pub}")
+                        _delete_peer_on_node(n, pub)
                     except Exception:
                         pass
 
@@ -20954,7 +20974,7 @@ def panel_peers_bulk():
 
                 if pub:
                     try:
-                        node_delete(n, f"/api/peer/{pub}")
+                        _delete_peer_on_node(n, pub)
                     except Exception:
                         pass
 
@@ -20969,7 +20989,7 @@ def panel_peers_bulk():
 
                 if pub:
                     try:
-                        node_delete(n, f"/api/peer/{pub}")
+                        _delete_peer_on_node(n, pub)
                     except Exception:
                         pass
 
@@ -20981,7 +21001,7 @@ def panel_peers_bulk():
 
             for peer in created:
                 try:
-                    node_delete(n, f"/api/peer/{peer.public_key}")
+                    _delete_peer_on_node(n, peer.public_key)
                 except Exception:
                     pass
 

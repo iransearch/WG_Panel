@@ -9,7 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-import node
+if __package__:
+    from . import node
+    from .awg_config import DEFAULT_NODE_INTERFACE, LEGACY_NODE_ADDRESS, node_interface_settings
+else:
+    import node
+    from awg_config import DEFAULT_NODE_INTERFACE, LEGACY_NODE_ADDRESS, node_interface_settings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,9 +22,6 @@ AGENT = ROOT / "agent"
 STATE = ROOT / ".panel-setup"
 UNIT = Path("/etc/systemd/system/wg-node-agent.service")
 SERVICE = UNIT.name
-INTERFACE = "awg0"
-AWG_SERVICE = f"awg-quick@{INTERFACE}.service"
-ADDRESS = ipaddress.IPv4Interface("10.10.10.1/24")
 
 
 def stop(reason):
@@ -47,13 +49,17 @@ def active(service):
     return subprocess.run(["systemctl", "is-active", "--quiet", service], check=False).returncode == 0
 
 
-def provision(domain, email, api_port, awg_port, address):
+def provision(domain, email, api_port, awg_port, address,
+              interface_name=DEFAULT_NODE_INTERFACE, interface_address=LEGACY_NODE_ADDRESS):
+    interface_name, interface_address = node_interface_settings(interface_name, interface_address)
+    awg_service = f"awg-quick@{interface_name}.service"
     distro = node._env(Path("/etc/os-release").read_text()).get("ID", "").strip('"')
     if os.geteuid() != 0 or distro not in {"debian", "ubuntu"} or not Path("/run/systemd/system").is_dir():
         stop("platform")
 
-    settings = dict(domain=domain, api_port=api_port, awg_port=awg_port)
-    conf = node.wg_dir() / f"{INTERFACE}.conf"
+    settings = dict(domain=domain, api_port=api_port, awg_port=awg_port,
+                    interface_name=interface_name, interface_address=str(interface_address))
+    conf = node.wg_dir() / f"{interface_name}.conf"
     env = AGENT / ".env"
     hook = Path("/etc/letsencrypt/renewal-hooks/deploy/wg-node-agent")
     panel = subprocess.run(
@@ -64,12 +70,18 @@ def provision(domain, email, api_port, awg_port, address):
         stop("panel")
     if STATE.exists():
         previous = json.loads(STATE.read_text())
+        previous.setdefault("interface_name", DEFAULT_NODE_INTERFACE)
+        previous.setdefault("interface_address", LEGACY_NODE_ADDRESS)
+        previous_conf = conf.with_name(f'{previous["interface_name"]}.conf')
+        config_fields = ("interface_name", "interface_address", "awg_port")
         if (env.exists() and previous != settings) or (
-            conf.exists() and previous["awg_port"] != awg_port
+            previous_conf.exists() and any(previous[key] != settings[key] for key in config_fields)
         ):
             stop("settings")
+        if previous_conf != conf and (conf.exists() or Path(f"/sys/class/net/{interface_name}").exists()):
+            stop("existing")
     elif (UNIT.exists() or env.exists() or conf.exists() or hook.exists()
-          or active(SERVICE) or Path(f"/sys/class/net/{INTERFACE}").exists()):
+          or active(SERVICE) or Path(f"/sys/class/net/{interface_name}").exists()):
         stop("existing")
 
     step("dependencies")
@@ -78,7 +90,7 @@ def provision(domain, email, api_port, awg_port, address):
         "git", "python3-venv", "iproute2", "iptables", "nftables", timeout=600)
     if not active(SERVICE) and not check_port(api_port):
         stop("api_port")
-    if not active(AWG_SERVICE) and not check_port(awg_port, udp=True):
+    if not active(awg_service) and not check_port(awg_port, udp=True):
         stop("awg_port")
 
     lineage = Path("/etc/letsencrypt/live") / domain
@@ -101,14 +113,14 @@ def provision(domain, email, api_port, awg_port, address):
         routes = json.loads(run("ip", "-j", "-4", "route", "show", "table", "main", capture=True))
         if any(
             route.get("dst") not in (None, "default")
-            and ipaddress.IPv4Network(route["dst"], strict=False).overlaps(ADDRESS.network)
+            and ipaddress.IPv4Network(route["dst"], strict=False).overlaps(interface_address.network)
             for route in routes
         ):
             stop("network")
         private_key, _ = node.gen_keypair()
-        node._write(conf, node._wg_conf(str(ADDRESS), str(awg_port), private_key, node._default_iface(), root=ROOT))
-    run("systemctl", "enable", "--now", AWG_SERVICE)
-    if not active(AWG_SERVICE):
+        node._write(conf, node._wg_conf(str(interface_address), str(awg_port), private_key, node._default_iface(), root=ROOT))
+    run("systemctl", "enable", "--now", awg_service)
+    if not active(awg_service):
         raise SystemExit(1)
 
     step("certificate")
@@ -148,4 +160,4 @@ def provision(domain, email, api_port, awg_port, address):
 
 if __name__ == "__main__":
     os.umask(0o077)
-    provision(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5])
+    provision(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], *sys.argv[6:])

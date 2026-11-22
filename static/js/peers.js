@@ -4562,12 +4562,18 @@ async function clickList(e) {
     )) {
       const loader = toastSafe('Deleting peer…', 'info', true);
       try {
-        const url = scopeId
-          ? apiPath(`/peer/${encodeURIComponent(p?.public_key || '')}`)
+        const nodeId = window.NODE_ID || scopeId;
+        const url = nodeId
+          ? `/api/nodes/${encodeURIComponent(String(nodeId))}/peer`
           : `/api/peer/${encodeURIComponent(id)}`;
-
-        const r = await fetch(url, { method: 'DELETE', credentials: 'same-origin' });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const options = { method: 'DELETE', credentials: 'same-origin' };
+        if (nodeId) {
+          options.headers = { 'Content-Type': 'application/json' };
+          options.body = JSON.stringify({ public_key: p?.public_key || '' });
+        }
+        const r = await fetch(url, options);
+        const result = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(result.detail || result.error || 'HTTP ' + r.status);
 
         toastSafe('Peer deleted', 'success');
 
@@ -4578,7 +4584,7 @@ async function clickList(e) {
         refreshPeers?.({ abortPrev: true });
       } catch (err) {
         console.error(err);
-        toastSafe('Delete failed', 'error');
+        toastSafe(err.message || 'Delete failed', 'error');
       } finally {
         if (loader) {
           loader.classList.add('hide');

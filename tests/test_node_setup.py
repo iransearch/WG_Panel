@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import queue
@@ -26,10 +27,65 @@ def test_settings_default_ports_and_rejects_private_targets():
     config, password = settings()
     assert config["base_url"] == "https://node.example.com:8443"
     assert config["awg_port"] == 51820
+    assert config["interface_name"] == "awg0"
+    network = ipaddress.IPv4Interface(config["interface_address"]).network
+    assert network.num_addresses - 3 == 262141
     assert "password" not in config
     assert password == "test-only password"
     with pytest.raises(node_setup.SetupError, match="public server IP"):
         node_setup.parse_settings({**config, "ip": "169.254.169.254", "password": password})
+
+
+def test_custom_interface_name_and_private_cidr_reach_the_installer(monkeypatch):
+    config, password = settings()
+    config, _ = node_setup.parse_settings({
+        **config, "password": password, "interface_name": "wg1", "interface_address": "172.24.3.1/16",
+    })
+    commands = []
+
+    def run(client, argv, *, password=None, on_line=None, timeout=25):
+        commands.append(argv)
+        on_line(b"0" if argv == ["id", "-u"] else b"WG_API_KEY:" + b"A" * 24)
+        return 0
+
+    monkeypatch.setattr(node_setup, "_ssh_run", run)
+    assert node_setup._install(None, config, password, lambda name: None) == "A" * 24
+    assert commands[-1][-2:] == ["wg1", "172.24.3.1/16"]
+
+    for fields in [
+        {"interface_name": "../wg1"},
+        {"interface_address": "172.20.0.1/8"},
+        {"interface_address": "1.1.1.1/14"},
+        {"interface_address": "10.64.0.0/14"},
+    ]:
+        with pytest.raises(node_setup.SetupError):
+            node_setup.parse_settings({**config, "password": password, **fields})
+
+
+def test_health_checks_the_requested_interface_and_address(monkeypatch):
+    config, _ = settings()
+    config.update(interface_name="wg1", interface_address="172.24.3.1/16")
+    response = MagicMock(status=200)
+    response.__enter__.return_value = response
+    pool = MagicMock()
+    pool.__enter__.return_value.request.return_value = response
+    monkeypatch.setattr(node_setup.urllib3, "HTTPSConnectionPool", lambda *args, **kwargs: pool)
+    monkeypatch.setattr(node_setup, "_check_dns", lambda settings: None)
+    monkeypatch.setattr(node_setup.time, "sleep", lambda seconds: None)
+
+    def health(name, address):
+        response.read.return_value = json.dumps({
+            "ok": True, "interfaces": [{"name": name, "address": address, "is_up": True}],
+        }).encode()
+
+    health("awg0", "172.24.3.1/16")
+    with pytest.raises(node_setup.SetupError, match="wg1"):
+        node_setup._verify_node(config, "A" * 24)
+    health("wg1", "10.10.10.1/24")
+    with pytest.raises(node_setup.SetupError, match="wg1"):
+        node_setup._verify_node(config, "A" * 24)
+    health("wg1", "172.24.3.1/16")
+    node_setup._verify_node(config, "A" * 24)
 
 
 def test_job_claim_and_password_handoff(tmp_path):
@@ -81,7 +137,7 @@ def ssh_server(listener, host_key):
             try:
                 transport.start_server(server=Server())
                 active.wait(5)
-            except (paramiko.SSHException, EOFError):
+            except (paramiko.SSHException, EOFError, ConnectionResetError):
                 pass
 
     thread = threading.Thread(target=serve, daemon=True)

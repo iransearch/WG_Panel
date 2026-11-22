@@ -6,7 +6,7 @@ from io import BytesIO
 import zipfile
 from datetime import datetime
 from functools import wraps
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import re
 import ipaddress as ipa
@@ -1236,7 +1236,7 @@ def _write_conf_atomic(path: str, text: str, *, create_only=False):
 
     fd, tmp_path = tempfile.mkstemp(prefix='.wgconf.', dir=directory)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+        with os.fdopen(fd, 'w', encoding='utf-8', errors='surrogateescape') as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
@@ -5207,125 +5207,94 @@ def disable_peer(pub):
         host_cidr=host,
     )
 
-@app.route('/api/peer/<path:pub>', methods=['DELETE'])
-@require_api_key
-def delete_peer(pub):
+def _live_peer_keys(iface):
+    output = subprocess.check_output(
+        ['awg', 'show', iface, 'peers'], stderr=subprocess.PIPE, timeout=4,
+    )
+    return output.decode('ascii').split()
 
-    import fcntl
 
-    pub = (pub or '').strip()
-    if not pub:
-        return jsonify(ok=False, error='public_key_required'), 400
-
-    conf_dir = _wg_conf_dir()
-    errors = []
-    runtime_removed = False
-    config_removed = False
-    runtime_ifaces = []
-
-    try:
-        dump = subprocess.check_output(
-            ['awg', 'show', 'all', 'dump'], timeout=8
-        ).decode('utf-8', 'replace').splitlines()
-        for line in dump:
-            parts = line.split('\t')
-            if len(parts) == 9 and parts[1] == pub:
-                runtime_ifaces.append(parts[0])
-    except Exception as e:
-        errors.append(f'could not read the AmneziaWG runtime: {e}')
-
-    for iface in runtime_ifaces:
-        result = subprocess.run(
-            ['awg', 'set', iface, 'peer', pub, 'remove'],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12,
-            check=False,
-        )
-        if result.returncode != 0:
-            errors.append(
-                f'{iface}: {(result.stderr or result.stdout or "awg set failed").strip()}'
-            )
-        elif _runtime_has_peer(iface, pub):
-            errors.append(f'{iface}: the peer is still present after removal')
-        else:
-            runtime_removed = True
-
-    if not runtime_ifaces and not errors:
-        runtime_removed = True
-
-    try:
-        conf_names = [fn for fn in os.listdir(conf_dir) if fn.endswith('.conf')]
-    except OSError as e:
-        return jsonify(
-            ok=False, error='conf_dir_unreadable', detail=str(e),
-            runtime_removed=runtime_removed, config_removed=False,
-        ), 500
-
-    found_in_config = False
-
-    for fn in conf_names:
-        path = os.path.join(conf_dir, fn)
-        if not _conf_has_peer(path, pub):
+def _delete_peer_from_config(path, pub):
+    with open(path, encoding='utf-8', errors='surrogateescape', newline='') as source:
+        original = source.read()
+    lines = original.splitlines(keepends=True)
+    retained = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if line.partition('#')[0].strip().lower() != '[peer]':
+            retained.append(line)
             continue
 
-        found_in_config = True
-        lock_path = path + '.lock'
+        block = [line]
+        while index < len(lines) and not lines[index].lstrip().startswith('['):
+            block.append(lines[index])
+            index += 1
+        if not any(
+            key.strip().lower() == 'publickey' and value.strip() == pub
+            for key, _, value in (line.partition('#')[0].partition('=') for line in block)
+        ):
+            retained.extend(block)
 
+    updated = ''.join(retained)
+    if updated != original:
+        _write_conf_atomic(path, updated)
+
+
+@app.route('/api/peer', methods=['DELETE'])
+@app.route('/api/peer/<path:pub>', methods=['DELETE'])
+@require_api_key
+def delete_peer(pub=None):
+    if pub is None:
+        data = request.get_json(silent=True)
+        pub = data.get('public_key') if isinstance(data, dict) else None
+    pub = _valid_wg_key(pub) if isinstance(pub, str) else ''
+    if not pub:
+        return jsonify(ok=False, error='invalid_public_key', detail='Enter a valid peer public key.'), 400
+
+    try:
+        active_ifaces = set(subprocess.check_output(
+            ['awg', 'show', 'interfaces'], stderr=subprocess.PIPE, timeout=8,
+        ).decode('ascii').split())
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        app.logger.exception('Could not read active interfaces while deleting a peer')
+        return jsonify(ok=False, error='peer_runtime_unavailable',
+                       detail='Could not read the AmneziaWG runtime.'), 502
+
+    directory = Path(_wg_conf_dir())
+    try:
+        configs = {path.stem: path for path in directory.iterdir()
+                   if path.suffix == '.conf' and path.is_file()}
+    except OSError:
+        app.logger.exception('Could not read node configuration directory')
+        return jsonify(ok=False, error='conf_dir_unreadable',
+                       detail='Could not read the AmneziaWG configuration directory.'), 500
+
+    for name in sorted(active_ifaces | configs.keys()):
+        path = configs.get(name)
         try:
-            with open(lock_path, 'w') as lockf:
-                fcntl.flock(lockf, fcntl.LOCK_EX)
+            with _iface_config_lock(path, blocking=False) if path else nullcontext():
+                if name in active_ifaces and pub in _live_peer_keys(name):
+                    subprocess.run(
+                        ['awg', 'set', name, 'peer', pub, 'remove'],
+                        capture_output=True, timeout=8, check=True,
+                    )
+                    if pub in _live_peer_keys(name):
+                        return jsonify(ok=False, error='peer_runtime_removal_failed',
+                                       detail=f'The peer is still active on {name}.'), 502
+                if path:
+                    _delete_peer_from_config(path, pub)
+        except BlockingIOError:
+            return jsonify(ok=False, error='interface_busy',
+                           detail=f'Interface {name} is busy. Retry shortly.'), 409
+        except (subprocess.SubprocessError, UnicodeError, OSError):
+            app.logger.exception('Could not remove node peer on %s', name)
+            return jsonify(ok=False, error='peer_removal_incomplete',
+                           detail=f'Could not complete peer removal on {name}. Retry the deletion.'), 502
 
-                with open(path, 'r', encoding='utf-8', errors='ignore') as handle:
-                    lines = handle.readlines()
+    return jsonify(ok=True, public_key=pub, runtime_removed=True, config_removed=True)
 
-                out, i = [], 0
-                while i < len(lines):
-                    if lines[i].strip().lower() == '[peer]':
-                        block = [lines[i]]
-                        i += 1
-                        while i < len(lines) and not lines[i].strip().startswith('['):
-                            block.append(lines[i])
-                            i += 1
-                        matches = any(
-                            l.strip().lower().startswith('publickey')
-                            and '=' in l
-                            and l.split('=', 1)[1].strip() == pub
-                            for l in block
-                        )
-                        if not matches:
-                            out.extend(block)
-                    else:
-                        out.append(lines[i])
-                        i += 1
-
-                _write_conf_atomic(path, ''.join(out))
-
-                if _conf_has_peer(path, pub):
-                    errors.append(f'{fn}: the peer block is still present after removal')
-                else:
-                    config_removed = True
-
-        except Exception as e:
-            errors.append(f'{fn}: {e}')
-
-    if not found_in_config and not errors:
-        config_removed = True
-
-    if errors:
-        return jsonify(
-            ok=False,
-            error='peer_removal_incomplete',
-            detail='; '.join(errors),
-            public_key=pub,
-            runtime_removed=runtime_removed,
-            config_removed=config_removed,
-        ), 500
-
-    return jsonify(
-        ok=True,
-        public_key=pub,
-        runtime_removed=runtime_removed,
-        config_removed=config_removed,
-    )
 
 @app.route('/api/iface/<name>/available_ips')
 @require_api_key
@@ -5343,7 +5312,7 @@ def iface_availableIPS(name):
 @contextmanager
 def _iface_config_lock(path, *, blocking=True):
     # Share the lock used by peer writes and deletes.
-    with open(path + '.lock', 'a', encoding='utf-8') as handle:
+    with open(f'{path}.lock', 'a', encoding='utf-8') as handle:
         flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         fcntl.flock(handle, flags)
         yield

@@ -598,8 +598,8 @@
     function openSetup(settings = null) {
       setupForm.reset();
       formError.hidden = true;
-      for (const name of ['ip', 'username', 'domain', 'email', 'name', 'ssh_port', 'node_port', 'awg_port']) {
-        if (settings) setupForm.elements.namedItem(name).value = settings[name] ?? '';
+      for (const name of ['ip', 'username', 'domain', 'email', 'name', 'ssh_port', 'node_port', 'awg_port', 'interface_name', 'interface_address']) {
+        if (settings && name in settings) setupForm.elements.namedItem(name).value = settings[name];
       }
       if (!dialog.open) dialog.showModal();
       if (settings) setupForm.elements.password.focus();

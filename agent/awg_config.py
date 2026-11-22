@@ -1,11 +1,34 @@
 """AmneziaWG interface settings shared by the panel and Node."""
 import base64
+import ipaddress
 import os
 import re
 import secrets
 import subprocess
 from pathlib import Path
 from tempfile import mkstemp
+
+
+DEFAULT_NODE_INTERFACE = "awg0"
+DEFAULT_NODE_ADDRESS = "10.64.0.1/14"
+LEGACY_NODE_ADDRESS = "10.10.10.1/24"
+_PRIVATE_IPV4_NETWORKS = tuple(map(ipaddress.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
+
+
+def node_interface_settings(name, address):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}", name):
+        raise ValueError("Use 1–15 letters, digits, underscores, dots or dashes. Start the name with a letter or digit.")
+    if not isinstance(address, str) or not re.fullmatch(r"[0-9.]+/[0-9]{1,2}", address):
+        raise ValueError("Enter a private IPv4 address in CIDR format, such as 10.64.0.1/14.")
+    try:
+        interface = ipaddress.IPv4Interface(address)
+    except ValueError:
+        raise ValueError("Enter a valid private IPv4 address with a CIDR prefix.") from None
+    if not any(interface.network.subnet_of(network) for network in _PRIVATE_IPV4_NETWORKS):
+        raise ValueError("The entire interface subnet must be within a private IPv4 range.")
+    if interface.ip in (interface.network.network_address, interface.network.broadcast_address):
+        raise ValueError("Use a usable server IP within a subnet that has room for clients.")
+    return name, interface
 
 
 _FIELDS = (

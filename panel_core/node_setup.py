@@ -20,6 +20,10 @@ from pathlib import Path
 import requests
 import urllib3
 
+from agent.awg_config import (
+    DEFAULT_NODE_ADDRESS, DEFAULT_NODE_INTERFACE, LEGACY_NODE_ADDRESS, node_interface_settings,
+)
+
 
 PROVISION = r"""
 set -eu
@@ -45,6 +49,8 @@ if [ ! -f "$root/.panel-provision-repo" ]; then
     git clone --depth 1 --branch main https://github.com/iransearch/WG_Panel.git "$staging"
     touch "$staging/.panel-provision-repo"
     mv -T "$staging" "$root"
+elif [ ! -f "$root/.panel-setup" ] || [ ! -f "$root/agent/.env" ]; then
+    git -C "$root" pull --ff-only origin main
 fi
 exec python3 "$root/agent/node_provision.py" "$@"
 """
@@ -68,7 +74,7 @@ REMOTE_ERRORS = {
     "port80": "Port 80 is in use. Free it for the standalone certificate challenge.",
     "api_port": "The node API TCP port is already in use.",
     "awg_port": "The AmneziaWG UDP port is already in use.",
-    "network": "The default AmneziaWG subnet overlaps an existing server route.",
+    "network": "The selected AmneziaWG subnet overlaps an existing server route. Choose another CIDR.",
     "certificate": "Certificate issuance failed. Check DNS and inbound TCP port 80.",
 }
 REMOTE_STAGES = {"dependencies", "interface", "certificate", "service"}
@@ -129,6 +135,14 @@ def parse_settings(payload):
     if ports["node_port"] in (80, ports["ssh_port"]):
         raise SetupError("Choose a node API port different from port 80 and the SSH port.")
 
+    try:
+        interface_name, interface_address = node_interface_settings(
+            field("interface_name") or DEFAULT_NODE_INTERFACE,
+            field("interface_address") or DEFAULT_NODE_ADDRESS,
+        )
+    except ValueError as exc:
+        raise SetupError(str(exc)) from None
+
     name = field("name") or domain[:64]
     if len(name) > 64 or any(ord(char) < 32 for char in name):
         raise SetupError("Enter a node name of up to 64 characters.")
@@ -141,7 +155,8 @@ def parse_settings(payload):
     if ports["node_port"] != 443:
         base_url += f":{ports['node_port']}"
     settings = dict(name=name, ip=str(ip), username=username, domain=domain,
-                    email=email, base_url=base_url, **ports)
+                    email=email, base_url=base_url, interface_name=interface_name,
+                    interface_address=str(interface_address), **ports)
     return settings, password
 
 
@@ -220,6 +235,8 @@ def list_jobs(directory):
                     if state["status"] in ACTIVE:
                         state.update(status="failed", message="Setup was interrupted. Retry to resume on the server.")
                         _write_state(path, state)
+        state["settings"].setdefault("interface_name", DEFAULT_NODE_INTERFACE)
+        state["settings"].setdefault("interface_address", LEGACY_NODE_ADDRESS)
         jobs.append(state)
     return jobs
 
@@ -337,6 +354,8 @@ def _install(client, settings, password, stage):
         *sudo, "flock", "-n", "-E", "73", "/run/lock/wg-panel-node-setup.lock",
         "bash", "-c", PROVISION, "node-setup", settings["domain"], settings["email"],
         str(settings["node_port"]), str(settings["awg_port"]), settings["ip"],
+        settings.get("interface_name", DEFAULT_NODE_INTERFACE),
+        settings.get("interface_address", LEGACY_NODE_ADDRESS),
     ]
     code = _ssh_run(client, command, password=secret, on_line=monitor, timeout=2700)
     if code == 73:
@@ -351,6 +370,8 @@ def _verify_node(settings, api_key):
     # Redirects and environment proxies must never receive the new node API key.
     _check_dns(settings)
     domain = settings["domain"]
+    interface_name = settings.get("interface_name", DEFAULT_NODE_INTERFACE)
+    interface_address = settings.get("interface_address")
     with urllib3.HTTPSConnectionPool(
         settings["ip"], port=settings["node_port"], server_hostname=domain,
         assert_hostname=domain, cert_reqs=ssl.CERT_REQUIRED, ca_certs=requests.certs.where(),
@@ -367,7 +388,9 @@ def _verify_node(settings, api_key):
                 with response:
                     health = json.loads(response.read(65536)) if response.status == 200 else {}
                 if health.get("ok") is True and any(
-                    iface.get("name") == "awg0" and iface.get("is_up") is True
+                    iface.get("name") == interface_name
+                    and iface.get("is_up") is True
+                    and (interface_address is None or iface.get("address") == interface_address)
                     for iface in health.get("interfaces", [])
                 ):
                     return
@@ -375,7 +398,8 @@ def _verify_node(settings, api_key):
                 pass
             if attempt < 4:
                 time.sleep(2)
-    raise SetupError("The panel could not verify the node’s HTTPS API and awg0. Check the certificate, service and inbound API port.")
+    raise SetupError(f"The panel could not verify HTTPS and the requested configuration on {interface_name}. "
+                     "Check the certificate, API port and interface address.")
 
 
 def _run_job(path):

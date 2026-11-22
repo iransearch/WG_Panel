@@ -6118,17 +6118,22 @@
             "Peer could not be resolved from the current list. Refresh the page and try again.",
           );
 
-        const url = apiPeerPath(p);
+        const nodeId = window.NODE_ID || getScopeId();
+        const url = nodeId
+          ? `/api/nodes/${encodeURIComponent(String(nodeId))}/peer`
+          : apiPeerPath(p);
         btn.disabled = true;
 
-        const r = await fetch(url, {
-          method: "DELETE",
-          credentials: "same-origin",
-          headers: {
-            Accept: "application/json",
-            ...(window.csrfHeaders?.(false) || {}),
-          },
-        });
+        const headers = {
+          Accept: "application/json",
+          ...(window.csrfHeaders?.(Boolean(nodeId)) || {}),
+        };
+        const options = { method: "DELETE", credentials: "same-origin", headers };
+        if (nodeId) {
+          headers["Content-Type"] = "application/json";
+          options.body = JSON.stringify({ public_key: p.public_key || "" });
+        }
+        const r = await fetch(url, options);
 
         const result = await r.json().catch(() => ({}));
         if (!r.ok) {
