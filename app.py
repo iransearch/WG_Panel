@@ -54,7 +54,7 @@ from panel_core import node_client as _node_client
 from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
 from sqlalchemy import or_, and_, text, inspect, func, event
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 from flask_compress import Compress
 from flask_wtf.csrf import CSRFProtect, generate_csrf
 from urllib.parse import quote, urlparse, urljoin
@@ -19296,6 +19296,44 @@ def dashboard_peer_activity():
         counts=counts, sampled_at=sampled_at, handshake_window=DASHBOARD_HANDSHAKE_WINDOW,
         recent=nlargest(5, recent, key=lambda peer: peer['latest_handshake']),
     )
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@app.get('/api/dashboard/subscription-summary')
+@login_required
+def dashboard_subscription_summary():
+    """Count subscription policies using persisted usage and lifecycle rules."""
+    now = now_ts()
+    summary = dict(total=0, active=0, blocked=0, expiring_soon=0)
+    rows = (
+        db.session.query(Subscription, func.coalesce(func.sum(Peer.used_bytes_total), 0))
+        .options(load_only(
+            Subscription.id, Subscription.enabled, Subscription.unlimited,
+            Subscription.data_limit_value, Subscription.data_limit_unit, Subscription.time_limit_days,
+            Subscription.start_on_first_use, Subscription.first_used_at,
+            Subscription.timer_started_at, Subscription.created_at,
+        ))
+        .outerjoin(SubscriptionPeer, SubscriptionPeer.subscription_id == Subscription.id)
+        .outerjoin(Peer, Peer.id == SubscriptionPeer.peer_id)
+        .group_by(Subscription.id)
+        .yield_per(500)
+    )
+    for sub, used_bytes in rows:
+        expiry = _effective_expiry_ts(sub)
+        access = compute_subscription_access(
+            enabled=sub.enabled, unlimited=sub.unlimited, expires_at_ts=expiry,
+            now_ts=now, limit_bytes=_sub_limit_bytes(sub), used_bytes=used_bytes,
+        )
+        summary['total'] += 1
+        if access['allowed']:
+            summary['active'] += 1
+            if expiry is not None and 0 < expiry - now <= 7 * 86400:
+                summary['expiring_soon'] += 1
+        else:
+            summary['blocked'] += 1
+
+    response = jsonify(summary)
     response.headers['Cache-Control'] = 'private, no-store'
     return response
 

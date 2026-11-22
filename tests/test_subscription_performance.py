@@ -104,6 +104,66 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(payload['summary']['total'], 12)
             self.assertEqual(payload['subscriptions'][0]['name'], 'Client 11')
 
+    def test_dashboard_subscription_summary_counts_policies_without_peer_runtime(self):
+        path = '/api/dashboard/subscription-summary'
+        with self.panel.app.app_context():
+            self.assertEqual(self.client.get(path).status_code, 302)
+        admin = AdminAccount(username='dashboard-policy-test', password_hash='unused')
+        db.session.add(admin)
+        db.session.commit()
+        with self.client.session_transaction() as session:
+            session['_user_id'] = str(admin.id)
+            session['_fresh'] = True
+
+        now = 1700000000
+        with patch.object(self.panel, 'now_ts', return_value=now):
+            empty = self.client.get(path)
+        self.assertEqual(empty.status_code, 200)
+        self.assertEqual(empty.json, dict(total=0, active=0, blocked=0, expiring_soon=0))
+        db.session.remove()
+
+        self.add_clients(7)
+        subs = Subscription.query.order_by(Subscription.id).all()
+        for sub in subs:
+            sub.created_at = self.panel.from_ts(now)
+        subs[0].time_limit_days = 8
+        subs[1].time_limit_days = 7
+        subs[2].time_limit_days = 1
+        subs[2].timer_started_at = self.panel.from_ts(now - 86400)
+        subs[3].enabled = False
+        subs[3].unlimited = True
+        subs[4].unlimited = True
+        subs[4].time_limit_days = 1
+        subs[5].data_limit_value = 1
+        subs[5].data_limit_unit = 'Mi'
+        first_peer = subs[5].links[0].peer
+        first_peer.used_bytes_total = 512 * 1024
+        second_peer = Peer(
+            name='Second inbound', iface=first_peer.iface, public_key='second-public',
+            private_key='fixture', address='10.1.0.50/32', used_bytes_total=512 * 1024,
+        )
+        db.session.add(SubscriptionPeer(subscription=subs[5], peer=second_peer))
+        subs[6].start_on_first_use = True
+        subs[6].time_limit_days = 1
+        db.session.add(Subscription(name='No inbounds', token='unassigned-policy'))
+        db.session.commit()
+        db.session.remove()
+
+        with (
+            patch.object(self.panel, 'now_ts', return_value=now),
+            patch.object(self.panel, '_subscription_row') as details,
+            patch.object(self.panel, '_wg_runtime_snapshot') as runtime,
+            patch.object(self.panel, 'node_get') as node_get,
+        ):
+            response = self.client.get(path)
+            details.assert_not_called()
+            runtime.assert_not_called()
+            node_get.assert_not_called()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
+        self.assertEqual(response.json, dict(total=8, active=5, blocked=3, expiring_soon=1))
+
     def test_dashboard_counts_recent_users_once_and_reports_missing_sources(self):
         self.add_clients(9)
         path = '/api/dashboard/peer-activity'

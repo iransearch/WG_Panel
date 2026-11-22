@@ -11,6 +11,7 @@
   const clock = value => new Intl.DateTimeFormat('en', {hour:'2-digit',minute:'2-digit',second:'2-digit',timeZone:window.WG_PANEL_TIMEZONE||'UTC'}).format(new Date(value));
   const samples=[]; const sparks={}; let chart, windowSeconds=300, fastTimer, slowTimer, fastBusy=false, slowBusy=false;
   let activityTimer, activityBusy=false, lastActivity=null;
+  let hasSubscriptionSummary=false;
   async function request(path) {
     const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),15000);
     try { const response=await fetch(path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:{Accept:'application/json'}}); if(!response.ok)throw new Error(`HTTP ${response.status}`); const data=await response.json();if(data.error||data.ok===false)throw new Error('Unavailable');return data; } finally {clearTimeout(timer);}
@@ -75,18 +76,31 @@
     }finally{
       activityBusy=false;
       clearTimeout(activityTimer);
-      if(!document.hidden)activityTimer=setTimeout(refreshActivity,30000);
+      if(!document.hidden)activityTimer=setTimeout(refreshActivity,60000);
     }
   }
-  function subscriptions(rows){const active=rows.filter(s=>s.enabled!==false&&s.access?.allowed!==false);const soon=active.filter(s=>!s.unlimited&&number(s.ttl_seconds)!==null&&Number(s.ttl_seconds)>0&&Number(s.ttl_seconds)<=604800);const blocked=rows.length-active.length;
-    put('nx-subscriptions',active.length);spark('sub',active.length);put('nx-sub-caption',`${rows.length} total access policies`);put('nx-attention-count',soon.length+blocked);
-    put('nx-attention-title',soon.length?`${soon.length} subscription${soon.length===1?'':'s'} expire soon`:blocked?`${blocked} blocked or disabled polic${blocked===1?'y':'ies'}`:'No subscription alerts');
-    put('nx-attention-copy',soon.length?`Expiring within 7 days.${blocked?` ${blocked} other policies are blocked or disabled.`:''}`:blocked?'Review expired, exhausted or manually disabled access.':'No active subscriptions expire within the next 7 days.');$('nx-attention').classList.toggle('is-clear',!soon.length&&!blocked);
+  async function refreshSubscriptions(){
+    try{
+      const {total,active,blocked,expiring_soon:soon}=await request('/api/dashboard/subscription-summary');
+      if(![total,active,blocked,soon].every(value=>Number.isSafeInteger(value)&&value>=0))throw new Error('Policy counts unavailable');
+      put('nx-subscriptions',active);spark('sub',active);put('nx-sub-caption',`${total} total access policies`);put('nx-attention-count',soon+blocked);
+      put('nx-attention-title',soon?`${soon} subscription${soon===1?'':'s'} expire soon`:blocked?`${blocked} blocked or disabled polic${blocked===1?'y':'ies'}`:'No subscription alerts');
+      put('nx-attention-copy',soon?`Expiring within 7 days.${blocked?` ${blocked} other policies are blocked or disabled.`:''}`:blocked?'Review expired, exhausted or manually disabled access.':'No active subscriptions expire within the next 7 days.');
+      $('nx-attention').classList.toggle('is-clear',!soon&&!blocked);
+      hasSubscriptionSummary=true;
+    }catch(_){
+      put('nx-sub-caption',hasSubscriptionSummary?'Last available count · retrying':'Policy data unavailable · retrying');
+      if(!hasSubscriptionSummary){
+        put('nx-attention-title','Subscription check unavailable');
+        put('nx-attention-copy','Open subscriptions to inspect current access policies.');
+        put('nx-attention-count','—');
+      }
+    }
   }
   function health(data){const counts=data.counts||{};const total=['healthy','review','attention','unknown'].reduce((n,k)=>n+(number(counts[k])||0),0);const good=number(counts.healthy)||0;const percent=total?Math.round(good/total*100):null;put('nx-health-percent',percent===null?'—':`${percent}%`);put('nx-health-label',{healthy:'Healthy',review:'Review',attention:'Attention',unknown:'Unknown'}[data.state]||'Unknown');put('nx-health-detail',total?`${good} of ${total} checks healthy`:'Health data unavailable');$('nx-health-ring').style.setProperty('--health',`${percent||0}%`);$('nx-health-ring').dataset.state=data.state||'unknown';$('nx-health-strip').dataset.state=data.state||'unknown';put('nx-health-headline',data.headline||'Health summary unavailable');}
   async function refreshDetails(){if(slowBusy||document.hidden)return;slowBusy=true;
     const tasks=[
-      request('/api/subscriptions').then(d=>{if(!Array.isArray(d.subscriptions))throw Error();subscriptions(d.subscriptions);}).catch(()=>{put('nx-subscriptions','—');put('nx-sub-caption','Policy data unavailable');put('nx-attention-title','Subscription check unavailable');put('nx-attention-copy','Open subscriptions to inspect current access policies.');put('nx-attention-count','—');}),
+      refreshSubscriptions(),
       request('/api/telegram/status').then(d=>{put('nx-tg-state',d.bot_online?'Connected':'Offline');$('nx-tg-state').className=`nx-status-pill ${d.bot_online?'online':'offline'}`;put('nx-tg-note',d.bot_online?'Bot service is running': 'Bot is offline or has no recent heartbeat');}).catch(()=>{put('nx-tg-state','Unavailable');$('nx-tg-state').className='nx-status-pill';put('nx-tg-note','Unable to read bot status');})
     ];
     if(root.dataset.nodes==='1')tasks.push(request('/api/nodes').then(d=>{const nodes=d.nodes||[];put('nx-node-count',`${nodes.filter(n=>n.online).length} of ${nodes.length} nodes online`);}).catch(()=>put('nx-node-count','Node status unavailable')));else put('nx-node-count','Local server');
