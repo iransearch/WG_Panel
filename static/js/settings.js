@@ -886,9 +886,10 @@ document.getElementById('rt-restart')
       if (!el || el === document.activeElement || el.dataset.userEdited === '1') return;
       el.value = (v ?? '');
     };
-    setEditable('i-ep-host', meta?.endpoint_host ?? '');
-    setEditable('i-ep-port', meta?.endpoint_port ?? '');
-    set('i-ep-effective', meta?.effective_endpoint ?? '');
+    const endpoints = meta?.client_endpoints ?? [];
+    setEditable('i-ep-host', endpoints.length ? endpoints.map(pair => pair.host).join(', ') : meta?.endpoint_host);
+    setEditable('i-ep-port', endpoints.length ? endpoints.map(pair => pair.port).join(', ') : meta?.endpoint_port);
+    set('i-ep-effective', endpoints.length ? endpoints.map(pair => pair.endpoint).join(', ') : meta?.effective_endpoint);
 
     const srcEl = document.getElementById('i-ep-source');
     if (srcEl) {
@@ -896,7 +897,9 @@ document.getElementById('rt-restart')
       const auto = meta?.auto_endpoint || '(none detected)';
       srcEl.textContent =
         src === 'override'
-          ? `Saved override in use. Auto-detection would give ${auto}.`
+          ? (endpoints.length > 1
+            ? `${endpoints.length} subscription endpoints. Single configs and QR use ${endpoints[0].endpoint}.`
+            : `Saved override in use. Auto-detection would give ${auto}.`)
           : src === 'auto'
             ? `Auto-detected. Save a host and port above to override it.`
             : 'No endpoint could be determined. Exported configs will have no Endpoint line.';
@@ -1317,12 +1320,11 @@ document.getElementById('rt-restart')
     const url = endpointRoute(e.currentTarget);
     if (!url) { toast('Select an interface first.', 'error'); return; }
     const host = ($('#i-ep-host')?.value || '').trim();
-    const raw  = ($('#i-ep-port')?.value || '').trim();
-    const port = raw === '' ? null : Number(raw);
+    const port = ($('#i-ep-port')?.value || '').trim();
     try {
-      await jfetch(url, { method: 'PUT', body: { host: host || null, port } });
+      await jfetch(url, { method: 'PUT', body: { host: host || null, port: port || null } });
       await reloadIfaceCurrent();
-      toast('Endpoint default saved. Configs exported from now on will use it.', 'success');
+      toast('Client endpoints saved.', 'success');
     } catch (err) { toast('Save failed: ' + err.message, 'error'); }
   });
 
@@ -1345,7 +1347,7 @@ document.getElementById('rt-restart')
         `Stamp ${dry.effective_endpoint} onto ${dry.would_update} existing peer(s)?\n` +
         `${dry.skipped_explicit} peer(s) with their own endpoint will be skipped.\n\n` +
         `Those peers get pinned to this endpoint and stop following the interface ` +
-        `default, so later changes here will not reach them.\n` +
+        `default, so subscription links for those peers will only use this endpoint.\n` +
         `Already-downloaded configs are not rewritten.`;
       if (!await window.wgConfirm({title:'Apply endpoint to peers?',body:msg,okText:'Apply endpoint'})) return;
       const done = await jfetch(url, { method: 'POST', body: { dry_run: false } });

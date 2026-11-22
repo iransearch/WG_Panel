@@ -17,6 +17,7 @@ class InterfaceConfig(db.Model):
     listen_port = db.Column(db.Integer, nullable=False)
     endpoint_host = db.Column(db.String(255))
     endpoint_port = db.Column(db.Integer)
+    endpoint_alternates = db.Column(db.JSON)
     private_key = db.Column(db.String(256), nullable=False)
     public_key  = db.Column(db.String(128))
     mtu         = db.Column(db.Integer)

@@ -49,7 +49,7 @@ from auth import require_api_key, admin_required, require_api_key_or_login
 from panel_core.security import hash_recovery, verify_recovery, generate_recovery_codes as _gen_recovery
 from panel_core.profiles import register_profile_routes, panel_default_dns as _panel_default_dns
 from panel_core.subscription_policy import compute_subscription_access, effective_peer_state
-from panel_core.irspeedy_feed import share_uri as _irspeedy_share_uri
+from panel_core.irspeedy_feed import share_uris as _irspeedy_share_uris
 from panel_core import node_client as _node_client
 from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
@@ -374,6 +374,10 @@ def _interface_schema():
     if 'endpoint_port' not in cols:
         statements.append(
             'ALTER TABLE interface_config ADD COLUMN endpoint_port INTEGER'
+        )
+    if 'endpoint_alternates' not in cols:
+        statements.append(
+            'ALTER TABLE interface_config ADD COLUMN IF NOT EXISTS endpoint_alternates JSON'
         )
     if 'public_key' not in cols:
         statements.append(
@@ -13489,6 +13493,30 @@ def parse_endpoint_override(host, port):
     return (_parse_endpoint_host(host_raw), _parse_endpoint_port(port_raw))
 
 
+def _parse_iface_endpoint_pairs(host, port):
+    hosts = str(host if host is not None else '').strip().replace('،', ',')
+    ports = str(port if port is not None else '').strip().replace('،', ',')
+    if ',' not in hosts and ',' not in ports:
+        single = parse_endpoint_override(hosts, ports)
+        return [single] if single[0] is not None else []
+
+    hosts = [value.strip() for value in hosts.split(',')]
+    ports = [value.strip() for value in ports.split(',')]
+    if len(hosts) != len(ports) or not all(hosts) or not all(ports):
+        raise EndpointValidationError(
+            'endpoint_count_mismatch',
+            'Enter the same number of hosts and ports. Each position needs both values.',
+        )
+    return [parse_endpoint_override(host, port) for host, port in zip(hosts, ports)]
+
+
+def _set_iface_endpoint_pairs(iface, pairs):
+    iface.endpoint_host, iface.endpoint_port = pairs[0] if pairs else (None, None)
+    iface.endpoint_alternates = [
+        {'host': host, 'port': port} for host, port in pairs[1:]
+    ]
+
+
 def parse_endpoint_string(value):
 
     text_value = (value or '').strip()
@@ -13531,6 +13559,25 @@ def iface_endpoint_override(iface):
         return ''
 
     return _norm_hostport(host, int(port))
+
+
+def _endpoint_override_fields(iface):
+    host = (getattr(iface, 'endpoint_host', None) or '').strip() or None
+    port = getattr(iface, 'endpoint_port', None)
+    override = iface_endpoint_override(iface)
+    endpoints = []
+    if override:
+        endpoints.append({'host': host, 'port': port, 'endpoint': override})
+        endpoints.extend(
+            {**pair, 'endpoint': _norm_hostport(pair['host'], pair['port'])}
+            for pair in (iface.endpoint_alternates or [])
+        )
+    return {
+        'endpoint_host': host,
+        'endpoint_port': port,
+        'endpoint_override': override,
+        'client_endpoints': endpoints,
+    }
 
 
 def _safe_explicit_endpoint(explicit):
@@ -16055,28 +16102,14 @@ def node_ifaces(nid):
             if remote_pk:
                 _persist_iface_public_key(mirror, remote_pk)
 
-            override = iface_endpoint_override(mirror)
-            host = (getattr(mirror, 'endpoint_host', None) or '').strip() or None
-            port = getattr(mirror, 'endpoint_port', None)
-
-            item.update({
-                'endpoint_host': host,
-                'endpoint_port': int(port) if port else None,
-                'endpoint_override': override,
-                'auto_endpoint': '',
-                'effective_endpoint': override,
-                'endpoint_source': 'override' if override else 'none',
-            })
-        else:
-
-            item.update({
-                'endpoint_host': None,
-                'endpoint_port': None,
-                'endpoint_override': '',
-                'auto_endpoint': '',
-                'effective_endpoint': '',
-                'endpoint_source': 'none',
-            })
+        fields = _endpoint_override_fields(mirror)
+        override = fields['endpoint_override']
+        item.update({
+            **fields,
+            'auto_endpoint': '',
+            'effective_endpoint': override,
+            'endpoint_source': 'override' if override else 'none',
+        })
 
         try:
             available_result = node_get(
@@ -16803,9 +16836,8 @@ def _endpoint_default_payload(iface, *, scope=None, node=None, remote_iface=None
     if scope is None:
         scope = 'node' if getattr(iface, 'node_id', None) is not None else 'local'
 
-    host = (getattr(iface, 'endpoint_host', None) or '').strip() or None
-    port = getattr(iface, 'endpoint_port', None)
-    override = iface_endpoint_override(iface)
+    fields = _endpoint_override_fields(iface)
+    override = fields['endpoint_override']
 
     auto = ''
     try:
@@ -16831,9 +16863,7 @@ def _endpoint_default_payload(iface, *, scope=None, node=None, remote_iface=None
         'iface_id': iface.id,
         'iface': remote_iface_name(iface) if scope == 'node' else (iface.name or ''),
         'listen_port': iface.listen_port,
-        'endpoint_host': host,
-        'endpoint_port': int(port) if port else None,
-        'endpoint_override': override,
+        **fields,
         'auto_endpoint': auto,
         'effective_endpoint': effective,
         'endpoint_source': 'override' if override else ('auto' if auto else 'none'),
@@ -16912,18 +16942,16 @@ def api_iface_endpoint_default_put(iid):
         ), 400
 
     try:
-        host, port = parse_endpoint_override(data.get('host'), data.get('port'))
+        pairs = _parse_iface_endpoint_pairs(data.get('host'), data.get('port'))
     except EndpointValidationError as exc:
         return jsonify(ok=False, error=exc.code, detail=exc.detail), 400
 
-    iface.endpoint_host = host
-    iface.endpoint_port = port
+    _set_iface_endpoint_pairs(iface, pairs)
     db.session.commit()
 
     current_app.logger.info(
-        'Endpoint default %s for local interface %s: host=%s port=%s',
-        'cleared' if host is None else 'saved',
-        iface.name, host or '-', port or '-',
+        'Saved %d client endpoint(s) for local interface %s',
+        len(pairs), iface.name,
     )
 
     return jsonify(ok=True, **_endpoint_default_payload(iface))
@@ -17008,9 +17036,7 @@ def api_node_iface_endpoint_default_get(nid, name):
         iface=name,
         iface_id=None,
         listen_port=None,
-        endpoint_host=None,
-        endpoint_port=None,
-        endpoint_override='',
+        **_endpoint_override_fields(None),
         auto_endpoint=auto,
         effective_endpoint=auto,
         endpoint_source='auto' if auto else 'none',
@@ -17037,7 +17063,7 @@ def api_node_iface_endpoint_default_put(nid, name):
         ), 400
 
     try:
-        host, port = parse_endpoint_override(data.get('host'), data.get('port'))
+        pairs = _parse_iface_endpoint_pairs(data.get('host'), data.get('port'))
     except EndpointValidationError as exc:
         return jsonify(ok=False, error=exc.code, detail=exc.detail), 400
 
@@ -17046,14 +17072,12 @@ def api_node_iface_endpoint_default_put(nid, name):
     except NodeIfaceLookupError as exc:
         return jsonify(ok=False, error=exc.code, detail=exc.detail), exc.status
 
-    iface.endpoint_host = host
-    iface.endpoint_port = port
+    _set_iface_endpoint_pairs(iface, pairs)
     db.session.commit()
 
     current_app.logger.info(
-        'Endpoint default %s for node %s interface %s: host=%s port=%s',
-        'cleared' if host is None else 'saved',
-        nid, name, host or '-', port or '-',
+        'Saved %d client endpoint(s) for node %s interface %s',
+        len(pairs), nid, name,
     )
 
     return jsonify(
@@ -21396,11 +21420,10 @@ def get_interfaces():
             'is_up': _iface_up(i.name),
         }
 
-        override = iface_endpoint_override(i)
+        fields = _endpoint_override_fields(i)
+        override = fields['endpoint_override']
         row.update({
-            'endpoint_host': (getattr(i, 'endpoint_host', None) or '').strip() or None,
-            'endpoint_port': int(i.endpoint_port) if getattr(i, 'endpoint_port', None) else None,
-            'endpoint_override': override,
+            **fields,
             'auto_endpoint': '',
             'effective_endpoint': override,
             'endpoint_source': 'override' if override else 'none',
@@ -30289,8 +30312,14 @@ def irspeedy_subscription_links(token):
         config, error = _peer_client_conf_or_502(peer)
         if error:
             return error
+        alternates = ()
+        if peer.iface.endpoint_alternates and not _safe_explicit_endpoint(peer.endpoint):
+            alternates = (
+                _norm_hostport(pair['host'], pair['port'])
+                for pair in peer.iface.endpoint_alternates
+            )
         try:
-            uris.append(_irspeedy_share_uri(config, link.location_label or peer.name))
+            uris.extend(_irspeedy_share_uris(config, link.location_label or peer.name, alternates))
         except ValueError:
             return jsonify(error='share_link_unavailable'), 502
 

@@ -1,4 +1,4 @@
-"""Export one panel-generated AmneziaWG client config as a wg share link."""
+"""Export a panel-generated AmneziaWG client config as wg share links."""
 
 from base64 import b64decode
 from binascii import Error as Base64Error
@@ -27,7 +27,20 @@ def _key(value):
         return False
 
 
-def share_uri(config, name):
+def _authority(endpoint):
+    parsed = urlsplit("wg://" + endpoint)
+    port = parsed.port
+    host = parsed.hostname
+    if (
+        not host or not port or parsed.username is not None
+        or parsed.password is not None or parsed.path or parsed.query
+        or parsed.fragment or any(char.isspace() for char in host)
+    ):
+        raise ValueError("invalid WireGuard endpoint")
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def share_uris(config, name, alternate_endpoints=()):
     sections = {}
     section = None
     for line in config.splitlines():
@@ -48,17 +61,6 @@ def share_uri(config, name):
     public = peer.get("PublicKey", "")
     if not _key(private) or not _key(public):
         raise ValueError("missing WireGuard key")
-
-    endpoint = urlsplit("wg://" + peer.get("Endpoint", ""))
-    port = endpoint.port
-    host = endpoint.hostname
-    if (
-        not host or not port or endpoint.username is not None
-        or endpoint.password is not None or endpoint.path or endpoint.query
-        or endpoint.fragment or any(char.isspace() for char in host)
-    ):
-        raise ValueError("invalid WireGuard endpoint")
-    authority = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
     addresses = ",".join(str(ip_interface(value.strip())) for value in iface.get("Address", "").split(","))
     params = {
@@ -88,4 +90,15 @@ def share_uri(config, name):
     params.update(privatekey=private, publickey=public, address=addresses)
     if "pre_shared_key" in params:
         params["presharedkey"] = params["pre_shared_key"]
-    return f"wg://{authority}?{urlencode(params, quote_via=quote)}#{quote(name or 'AmneziaWG', safe='')}"
+    query = urlencode(params, quote_via=quote)
+    name = name or 'AmneziaWG'
+    links = []
+    for index, endpoint in enumerate((peer.get("Endpoint", ""), *alternate_endpoints)):
+        authority = _authority(endpoint)
+        label = name if index == 0 else f"{name} · {authority}"
+        links.append(f"wg://{authority}?{query}#{quote(label, safe='')}")
+    return links
+
+
+def share_uri(config, name):
+    return share_uris(config, name)[0]

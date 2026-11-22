@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from requests import ConnectionError
-from sqlalchemy import event, inspect
+from sqlalchemy import event, inspect, text
 
 from models import AdminAccount, InterfaceConfig, Node, OperationEvent, Peer, Subscription, SubscriptionPeer, db
 
@@ -312,6 +312,119 @@ class SubscriptionPerformanceTests(unittest.TestCase):
         db.session.add_all(interfaces)
         db.session.commit()
         return interfaces
+
+    def test_interface_schema_keeps_existing_client_endpoints(self):
+        local, _ = self.add_irspeedy_interfaces()
+        iface_id = local.id
+        db.session.remove()
+        with db.engine.begin() as connection:
+            connection.execute(text('ALTER TABLE interface_config DROP COLUMN endpoint_alternates'))
+        self.panel._interface_schema()
+        self.panel._interface_schema()
+
+        iface = db.session.get(InterfaceConfig, iface_id)
+        self.assertEqual((iface.endpoint_host, iface.endpoint_port), ('wg0.example.test', 51820))
+        self.assertIsNone(iface.endpoint_alternates)
+
+    def test_client_endpoint_pairs_expand_the_feed_for_local_and_node_peers(self):
+        local, pinned = self.add_irspeedy_interfaces()
+        node = Node(name='Edge', base_url='https://edge.example.test', api_key='node')
+        db.session.add(node)
+        db.session.commit()
+        local_path = f'/api/iface/{local.id}/endpoint-default'
+        node_path = f'/api/nodes/{node.id}/iface/awg0/endpoint-default'
+        node_interface = {
+            'name': 'awg0', 'address': '10.64.0.1/24', 'listen_port': 51825,
+            'public_key': b64encode(bytes([72]) * 32).decode(),
+        }
+
+        def node_get(target, path, **kwargs):
+            if path == '/api/interfaces':
+                return {'interfaces': [node_interface]}
+            if path == '/api/iface/awg0/awg-parameters':
+                return {'parameters': {'Jc': '4'}}
+            self.fail(f'Unexpected Agent request {path}')
+
+        def save(path, hosts, ports):
+            return self.client.put(path, headers=self.headers, json={'host': hosts, 'port': ports})
+
+        def endpoints(response):
+            self.assertEqual(response.status_code, 200, response.json)
+            return [pair['endpoint'] for pair in response.json['client_endpoints']]
+
+        with (
+            patch.object(self.panel, 'node_get', side_effect=node_get),
+            patch.object(self.panel, '_node_endpoint_fallback', return_value='auto.edge.test:51825'),
+            patch.object(self.panel, '_endpoint_fallback', return_value='auto.example.test:51820'),
+            patch.object(self.panel, '_wg_runtime_snapshot', return_value=({}, {})),
+        ):
+            self.assertEqual(endpoints(self.client.get(local_path, headers=self.headers)), ['wg0.example.test:51820'])
+            self.assertEqual(endpoints(self.client.get(node_path, headers=self.headers)), [])
+            local_endpoints = ['first.example.test:908', 'first.example.test:909', '[2001:db8::20]:910']
+            self.assertEqual(endpoints(save(
+                local_path, 'FIRST.example.test, first.example.test, [2001:0db8::20]', '908, 909, 910',
+            )), local_endpoints)
+            for hosts, ports, error in [
+                ('first.example.test, second.example.test', 908, 'endpoint_count_mismatch'),
+                ('first.example.test', '908, 909', 'endpoint_count_mismatch'),
+                ('first.example.test,', '908, 909', 'endpoint_count_mismatch'),
+                ('first.example.test, second.example.test', '908, 65536', 'endpoint_port_range'),
+            ]:
+                with self.subTest(hosts=hosts, ports=ports):
+                    invalid = save(local_path, hosts, ports)
+                    self.assertEqual(invalid.status_code, 400)
+                    self.assertEqual(invalid.json['error'], error)
+            self.assertEqual(endpoints(self.client.get(local_path, headers=self.headers)), local_endpoints)
+
+            node_endpoints = ['192.0.2.3:808', '192.0.2.4:809']
+            remote = save(node_path, '192.0.2.3، 192.0.2.4', '808، 809')
+            self.assertEqual(endpoints(remote), node_endpoints)
+            self.assertEqual(remote.json['listen_port'], 51825)
+            self.assertEqual(endpoints(self.client.get(node_path, headers=self.headers)), node_endpoints)
+            mirror = db.session.get(InterfaceConfig, remote.json['iface_id'])
+            self.assertEqual(endpoints(save(
+                f'/api/iface/{pinned.id}/endpoint-default', 'a.example.test, b.example.test', '200, 201',
+            )), ['a.example.test:200', 'b.example.test:201'])
+            sub = Subscription(name='Endpoint choices', token='endpoint-choices', data_limit_value=10)
+            links = []
+            for index, iface in enumerate((local, mirror, pinned)):
+                key = b64encode(bytes([index + 1]) * 32).decode()
+                address = f'{ip_interface(iface.address).ip + 1}/32'
+                peer = Peer(
+                    name=f'Peer {index}', iface=iface, private_key=key, public_key=key,
+                    address=address, status='online',
+                    endpoint='pinned.example.test:918' if iface is pinned else None,
+                )
+                link = SubscriptionPeer(subscription=sub, peer=peer, sort_order=index)
+                db.session.add(link)
+                links.append(link)
+            db.session.commit()
+            config_path = f'/s/endpoint-choices/inbound/{links[0].id}'
+
+            def read_feed():
+                feed = self.client.get('/s/endpoint-choices/links')
+                self.assertEqual(feed.status_code, 200, feed.get_data(as_text=True))
+                return [urlsplit(link) for link in feed.get_data(as_text=True).splitlines()]
+
+            feed = read_feed()
+            self.assertEqual([link.netloc for link in feed],
+                             local_endpoints + node_endpoints + ['pinned.example.test:918'])
+            self.assertEqual(len({link.query for link in feed[:3]}), 1)
+            self.assertEqual(len({link.query for link in feed[3:5]}), 1)
+            self.assertEqual(len({link.fragment for link in feed[:3]}), 3)
+            self.assertEqual(Peer.query.count(), 3)
+            self.assertEqual(Subscription.query.one().data_limit_value, 10)
+
+            config = self.client.get(config_path + '/config').get_data(as_text=True)
+            self.assertIn('Endpoint = first.example.test:908\n', config)
+            with patch.object(self.panel.qrcode, 'make', wraps=self.panel.qrcode.make) as make_qr:
+                self.assertEqual(self.client.get(config_path + '/qr').status_code, 200)
+            make_qr.assert_called_once_with(config)
+            cleared = save(local_path, None, None)
+            self.assertEqual(endpoints(cleared), [])
+            self.assertEqual(cleared.json['endpoint_source'], 'auto')
+            self.assertEqual([link.netloc for link in read_feed()],
+                             ['auto.example.test:51820'] + node_endpoints + ['pinned.example.test:918'])
 
     def test_irspeedy_provisions_two_peers_with_one_subscription_and_feed(self):
         wg0, wg1 = self.add_irspeedy_interfaces()

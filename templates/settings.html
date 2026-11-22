@@ -1807,13 +1807,11 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
                   <input
                     class="input"
                     id="i-ep-host"
-                    placeholder="vpn.example.com"
+                    placeholder="vpn.example.com, 203.0.113.5"
                     autocomplete="off"
+                    aria-describedby="i-ep-host-help"
                   />
-                  <small
-                    >Written into exported client configs. Leave both fields
-                    empty to use auto-detection.</small
-                  >
+                  <small id="i-ep-host-help">Separate hosts with commas. Leave both fields empty for auto-detection.</small>
                 </div>
 
                 <div class="form-group iface-field-card is-editable">
@@ -1824,16 +1822,12 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
                   <input
                     class="input"
                     id="i-ep-port"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    inputmode="numeric"
-                    placeholder="51820"
+                    type="text"
+                    placeholder="51820, 51821"
+                    autocomplete="off"
+                    aria-describedby="i-ep-port-help"
                   />
-                  <small
-                    >May differ from the listen port when the server is behind
-                    NAT.</small
-                  >
+                  <small id="i-ep-port-help">Enter one port (1–65535) per host, in the same order.</small>
                 </div>
 
                 <div class="form-group iface-field-card is-readonly">
@@ -3144,7 +3138,7 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
     </script>
     <script
       defer
-      src="{{ url_for('static', filename='js/settings.js') }}"
+      src="{{ url_for('static', filename='js/settings.js', v='client-endpoints-1') }}"
     ></script>
     <script
       defer
