@@ -2673,11 +2673,12 @@ def interfaces():
 
     out = []
     scope_networks = _private_networks()
-    if os.path.isdir(WG_CONF_PATH):
-        for fn in os.listdir(WG_CONF_PATH):
+    config_directory = _wg_conf_dir()
+    if os.path.isdir(config_directory):
+        for fn in os.listdir(config_directory):
             if not fn.endswith('.conf'):
                 continue
-            conf_path = os.path.join(WG_CONF_PATH, fn)
+            conf_path = os.path.join(config_directory, fn)
             meta = _read_iface(conf_path)
             if not meta:
                 continue
@@ -2694,7 +2695,7 @@ def interfaces():
                 try:
                     prim = _first_cidr(meta.get('address'))
                     if prim:
-                        meta['available_ips'] = available_ips(meta['name'], prim, WG_CONF_PATH)
+                        meta['available_ips'] = available_ips(meta['name'], prim, config_directory)
                     else:
                         meta['available_ips'] = []
                 except Exception as e:
@@ -3993,10 +3994,8 @@ def add_peer():
 
         host = None
 
-        conf = os.path.join(
-            WG_CONF_PATH,
-            f'{iface}.conf',
-        )
+        config_directory = _wg_conf_dir()
+        conf = os.path.join(config_directory, f'{iface}.conf')
 
         lock_path = (
             conf
@@ -4417,7 +4416,7 @@ def add_peer():
                         metadata[
                             'address'
                         ],
-                        WG_CONF_PATH,
+                        config_directory,
                         limit=1,
                     )
                 )
@@ -5299,13 +5298,14 @@ def delete_peer(pub=None):
 @app.route('/api/iface/<name>/available_ips')
 @require_api_key
 def iface_availableIPS(name):
-    conf = os.path.join(WG_CONF_PATH, f'{name}.conf')
+    config_directory = _wg_conf_dir()
+    conf = os.path.join(config_directory, f'{name}.conf')
     if not os.path.isfile(conf):
         return jsonify(error='not_found'), 404
     meta = _read_iface(conf)
     if not meta:
         return jsonify(error='bad_conf'), 400
-    ips = available_ips(name, meta['address'], WG_CONF_PATH)
+    ips = available_ips(name, meta['address'], config_directory)
     return jsonify(available_ips=ips)
 
 

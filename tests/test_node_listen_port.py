@@ -38,6 +38,52 @@ def node(tmp_path, monkeypatch):
     return client, config, save
 
 
+@pytest.mark.parametrize("fast", [False, True])
+def test_interface_inventory_accepts_a_config_file_path(node, monkeypatch, fast):
+    client, config, _ = node
+    monkeypatch.setattr(node_agent, "WG_CONF_PATH", str(config))
+    monkeypatch.setattr(node_agent, "_iface_up", lambda name: True)
+    monkeypatch.setattr(node_agent, "_private_networks", lambda: [])
+    monkeypatch.setattr(node_agent, "_public_ipv4", lambda: "192.0.2.1")
+    monkeypatch.setattr(node_agent, "_extract_wgip", lambda name, network: set())
+
+    response = client.get(
+        "/api/interfaces",
+        query_string={"fast": int(fast)},
+        headers={"Authorization": "Bearer test-node-key"},
+    )
+
+    assert response.status_code == 200
+    [iface] = response.json["interfaces"]
+    assert iface["name"] == "awg0"
+    assert iface["listen_port"] == 51820
+    assert iface["available_ips"][:1] == ([] if fast else ["10.10.10.3/24"])
+
+
+def test_peer_provisioning_accepts_a_config_file_path(node, monkeypatch):
+    client, config, _ = node
+    monkeypatch.setattr(node_agent, "WG_CONF_PATH", str(config))
+    monkeypatch.setattr(node_agent, "_extract_wgip", lambda name, network: set())
+    monkeypatch.setattr(node_agent, "_runtime_has_peer", lambda iface, key: True)
+    monkeypatch.setattr(node_agent.subprocess, "check_call", lambda *args, **kwargs: 0)
+    runtime = Mock(return_value=subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(node_agent.subprocess, "run", runtime)
+    headers = {"Authorization": "Bearer test-node-key"}
+
+    response = client.get("/api/iface/awg0/available_ips", headers=headers)
+    assert response.status_code == 200
+    assert response.json["available_ips"][0] == "10.10.10.3/24"
+
+    response = client.post(
+        "/api/peers/add", json={"iface": "awg0", "public_key": "client-fixture"}, headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json["host_cidr"] == "10.10.10.3/32"
+    assert "PublicKey = client-fixture\nAllowedIPs = 10.10.10.3/32" in config.read_text()
+    runtime.assert_called_once()
+
+
 @pytest.mark.parametrize("is_up", [False, True])
 def test_persists_only_interface_port_and_updates_live_interface(node, monkeypatch, is_up):
     _, config, save = node
