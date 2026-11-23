@@ -184,8 +184,10 @@ function clientStateText(){
 function pct(n,d){return d?Math.max(0,Math.min(100,Math.round((n/d)*100))):0}
 function showToast(t='Copied'){const el=document.getElementById('toast');if(!el)return;el.textContent=t;el.classList.remove('show','toast-replay');void el.offsetWidth;el.classList.add('show','toast-replay');clearTimeout(window.__tt);const raw=Number(document.documentElement.dataset.toastDuration||PUBLIC_SETTINGS?.toast_duration||2200);const duration=Math.max(1200,Math.min(6000,Number.isFinite(raw)?raw:2200));window.__tt=setTimeout(()=>el.classList.remove('show','toast-replay'),duration)}
 async function copyText(txt){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(txt);showToast();return}}catch(e){}const ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();showToast()}
-function configUrl(id){return `/s/${encodeURIComponent(TOKEN)}/inbound/${id}/config`}
-function qrUrl(id){return `/s/${encodeURIComponent(TOKEN)}/inbound/${id}/qr`}
+function inboundUrl(id, action, endpoint=''){
+  const query=endpoint ? `?endpoint=${encodeURIComponent(endpoint)}` : '';
+  return `/s/${encodeURIComponent(TOKEN)}/inbound/${encodeURIComponent(id)}/${action}${query}`;
+}
 function safeConfName(value){
   const clean=String(value||'wireguard').trim().replace(/[^A-Za-z0-9_.-]+/g,'_').replace(/^[._]+|[._]+$/g,'');
   return `${clean||'wireguard'}.conf`;
@@ -287,7 +289,7 @@ function renderStats(){
   const tm=document.getElementById('time-meter'); if(tm){tm.style.width=Math.max(3,timePct)+'%';tm.parentElement.hidden=unlimitedTime;}
   setRing('time-ring',timePct,unlimitedTime?'∞':`${timePct}%`,'#60a5fa');
 
-  const n=(DATA.locations||[]).length;
+  const n=(DATA.locations||[]).reduce((total, loc) => total + 1 + (loc.alternate_endpoints?.length || 0), 0);
   set('cfg-count',`${n} config${n===1?'':'s'}`);
   set('hero-state',clientStateText());
   set('hero-time',unlimitedTime?(DATA.first_used_at?'Active':'No timer'):humanTTL(DATA.ttl_seconds));
@@ -302,9 +304,26 @@ function renderLocations(){
   if(!locs.length){grid.innerHTML='<div class="empty">No configs are available.</div>';return}
   const access=accessState();
   if(!access.allowed){grid.innerHTML=`<div class="empty">${escapeHtml(access.message||'Configs are unavailable for this subscription.')}</div>`;return}
-  grid.innerHTML=locs.map(l=>{
-    const initialLoc=cleanLocation(l), initialFlagHtml=flagMarkup(l.country_code,l.flag||'🌐'), host=publicAddress(l), needsGeo=!!host, label=escapeHtml(l.name||'wireguard');
-    return `<article class="loc" data-link="${l.link_id}" data-host="${escapeHtml(host)}" data-geo="${needsGeo?'1':'0'}"><div class="loc-top"><div class="loc-main"><div class="loc-name"><span class="loc-flag">${initialFlagHtml}</span><span class="loc-title">${escapeHtml(l.name||'Config')}</span></div><span class="loc-country">${needsGeo?'Detecting location...':escapeHtml(initialLoc)}</span></div><span class="status ${escapeHtml(String(l.status||'').toLowerCase())}">${escapeHtml(l.status||'offline')}</span></div><div class="loc-actions"><a class="loc-btn loc-download" href="${configUrl(l.link_id)}" data-download-config="${l.link_id}" data-filename="${label}" download="${label}.conf" title="Download config" aria-label="Download config"><i class="fas fa-download"></i></a><button class="loc-btn" data-qr="${l.link_id}" data-name="${label}" data-location="${escapeHtml(initialLoc)}"><i class="fas fa-qrcode"></i></button><button class="loc-btn" data-copy="${location.origin}${configUrl(l.link_id)}"><i class="fas fa-copy"></i></button></div></article>`;
+  grid.innerHTML=locs.flatMap(l=>{
+    const initialLoc=cleanLocation(l), initialFlagHtml=flagMarkup(l.country_code,l.flag||'🌐'), host=publicAddress(l);
+    const alternates=l.alternate_endpoints||[];
+    return ['', ...alternates].map(alternate=>{
+      const endpoint=alternate||l.endpoint;
+      const url=inboundUrl(l.link_id, 'config', alternate);
+      const name=l.name||'Config';
+      const filename=alternate ? `${name}-${alternate}` : name;
+      return `<article class="loc" data-link="${l.link_id}" data-host="${escapeHtml(host)}" data-geo="${host?'1':'0'}">
+        <div class="loc-top"><div class="loc-main">
+          <div class="loc-name"><span class="loc-flag">${initialFlagHtml}</span><span class="loc-title">${escapeHtml(name)}</span></div>
+          <span class="loc-country">${host?'Detecting location...':escapeHtml(initialLoc)}</span>
+          ${alternates.length && endpoint ? `<span class="loc-country" title="${escapeHtml(endpoint)}">${escapeHtml(endpoint)}</span>` : ''}
+        </div><span class="status ${escapeHtml(String(l.status||'').toLowerCase())}">${escapeHtml(l.status||'offline')}</span></div>
+        <div class="loc-actions">
+          <a class="loc-btn loc-download" href="${url}" data-download-config="${l.link_id}" data-filename="${escapeHtml(filename)}" download="${escapeHtml(safeConfName(filename))}" title="Download config" aria-label="Download config"><i class="fas fa-download"></i></a>
+          <button class="loc-btn" data-qr="${l.link_id}" data-endpoint="${escapeHtml(alternate)}" data-name="${escapeHtml(filename)}" data-location="${escapeHtml(endpoint && alternates.length ? endpoint : initialLoc)}" aria-label="Show config QR code"><i class="fas fa-qrcode"></i></button>
+          <button class="loc-btn" data-copy="${location.origin}${url}" aria-label="Copy config link"><i class="fas fa-copy"></i></button>
+        </div></article>`;
+    });
   }).join('');
   detectVisibleGeo();
 }
@@ -450,11 +469,11 @@ if(downloadAllButton){
   });
 }
 
-function openQrDialog(id,name,locationLabel){
+function openQrDialog(id,name,locationLabel,endpoint){
   const dialog=document.getElementById('qr-dialog'),img=document.getElementById('qr-image'),title=document.getElementById('qr-title'),locationEl=document.getElementById('qr-location'),download=document.getElementById('qr-download');
   if(!dialog||!img) return;
-  img.src=qrUrl(id); if(title)title.textContent=name||'WireGuard QR'; if(locationEl)locationEl.textContent=locationLabel||'Scan with the WireGuard app';
-  if(download){download.href=configUrl(id);download.dataset.downloadConfig=id;download.dataset.filename=name||'wireguard';}
+  img.src=inboundUrl(id, 'qr', endpoint); if(title)title.textContent=name||'WireGuard QR'; if(locationEl)locationEl.textContent=locationLabel||'Scan with the WireGuard app';
+  if(download){download.href=inboundUrl(id, 'config', endpoint);download.dataset.downloadConfig=id;download.dataset.filename=name||'wireguard';}
   dialog.hidden=false;document.body.classList.add('qr-open');
 }
 function closeQrDialog(){const dialog=document.getElementById('qr-dialog');if(dialog)dialog.hidden=true;document.body.classList.remove('qr-open');}
@@ -474,7 +493,7 @@ document.addEventListener('click', e => {
   }
 
   const q = e.target.closest('[data-qr]');
-  if(q){e.preventDefault();e.stopPropagation();openQrDialog(q.dataset.qr,q.dataset.name||'WireGuard',q.dataset.location||'Scan with the WireGuard app');return;}
+  if(q){e.preventDefault();e.stopPropagation();openQrDialog(q.dataset.qr,q.dataset.name||'WireGuard',q.dataset.location||'Scan with the WireGuard app',q.dataset.endpoint);return;}
 
   const c = e.target.closest('[data-copy]');
   if (c) {

@@ -368,7 +368,7 @@
       const API_URL = new URL({{ url_for('subscription_public_api', token=sub.token, _external=not is_preview)|tojson }}, document.baseURI).href;
       const PUBLIC_SETTINGS = {{ ps|tojson }};
     </script>
-    <script defer src="{{ url_for('static', filename='js/subscription_public.js') }}"></script>
+    <script defer src="{{ url_for('static', filename='js/subscription_public.js', v='endpoint-variants-1') }}"></script>
   </body>
 
   </html>

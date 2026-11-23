@@ -2,6 +2,7 @@ import os
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
 from gzip import decompress
+from io import BytesIO
 from ipaddress import ip_address, ip_interface, ip_network
 from pathlib import Path
 from subprocess import TimeoutExpired
@@ -9,7 +10,8 @@ from threading import Barrier, get_ident
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
+from zipfile import ZipFile
 
 from cryptography.fernet import Fernet
 from requests import ConnectionError
@@ -536,6 +538,50 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             with patch.object(self.panel.qrcode, 'make', wraps=self.panel.qrcode.make) as make_qr:
                 self.assertEqual(self.client.get(config_path + '/qr').status_code, 200)
             make_qr.assert_called_once_with(config)
+            portal_path = '/s/endpoint-choices'
+            with patch.object(self.panel, '_public_host_peer', return_value=''):
+                portal = self.client.get(portal_path)
+                self.assertEqual(portal.status_code, 200)
+                self.assertIn(b'[2001:db8::20]:910', portal.data)
+                public = self.client.get(portal_path + '/api').json['subscription']
+            self.assertEqual(len(public['locations']), 3)
+            self.assertEqual([
+                endpoint
+                for loc in public['locations']
+                for endpoint in [loc['endpoint'], *loc['alternate_endpoints']]
+            ], [uri.netloc for uri in feed])
+
+            query = urlencode({'endpoint': local_endpoints[2]})
+            config_variant = self.client.get(config_path + '/config?' + query)
+            self.assertEqual(config_variant.status_code, 200)
+            expected = config.replace(local_endpoints[0], local_endpoints[2])
+            self.assertEqual(config_variant.get_data(as_text=True), expected)
+            with patch.object(self.panel.qrcode, 'make', wraps=self.panel.qrcode.make) as make_qr:
+                self.assertEqual(self.client.get(config_path + '/qr?' + query).status_code, 200)
+            make_qr.assert_called_once_with(expected)
+            for action in ('config', 'qr'):
+                self.assertEqual(self.client.get(
+                    f'{config_path}/{action}?endpoint=example.test:999',
+                ).status_code, 404)
+
+            archive = self.client.get(portal_path + '/config')
+            self.assertEqual(archive.status_code, 200)
+            with ZipFile(BytesIO(archive.data)) as zipped:
+                archive_endpoints = [
+                    line.removeprefix('Endpoint = ')
+                    for name in zipped.namelist()
+                    for line in zipped.read(name).decode().splitlines()
+                    if line.startswith('Endpoint = ')
+                ]
+            self.assertEqual(archive_endpoints, [uri.netloc for uri in feed])
+
+            sub.enabled = False
+            db.session.commit()
+            public = self.client.get(portal_path + '/api').json['subscription']
+            self.assertTrue(all(not loc['alternate_endpoints'] for loc in public['locations']))
+            self.assertEqual(self.client.get(config_path + '/config?' + query).status_code, 403)
+            sub.enabled = True
+            db.session.commit()
             cleared = save(local_path, None, None)
             self.assertEqual(endpoints(cleared), [])
             self.assertEqual(cleared.json['endpoint_source'], 'auto')

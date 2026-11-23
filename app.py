@@ -29937,6 +29937,13 @@ def _subscription_access_or_403(sub):
     ), 403
 
 
+def _subscription_alternate_endpoints(peer):
+    iface = peer.iface
+    if not iface or not iface.endpoint_alternates or _safe_explicit_endpoint(peer.endpoint):
+        return []
+    return [_norm_hostport(pair['host'], pair['port']) for pair in iface.endpoint_alternates]
+
+
 def _subscription_public_payload(sub) -> dict:
     links = sorted(list(getattr(sub, 'links', []) or []), key=lambda x: (x.sort_order or 0, x.id or 0))
     limit_bytes = sub.limit_bytes() if hasattr(sub, 'limit_bytes') else None
@@ -30000,6 +30007,7 @@ def _subscription_public_payload(sub) -> dict:
             'name': peer.name,
             'status': peer.status,
             'endpoint': endpoint,
+            'alternate_endpoints': _subscription_alternate_endpoints(peer) if may_disclose_topology else [],
             'public_host': host,
             'location_label': label,
             'country_code': cc,
@@ -30267,14 +30275,10 @@ def irspeedy_subscription_links(token):
         config, error = _peer_client_conf_or_502(peer)
         if error:
             return error
-        alternates = ()
-        if peer.iface.endpoint_alternates and not _safe_explicit_endpoint(peer.endpoint):
-            alternates = (
-                _norm_hostport(pair['host'], pair['port'])
-                for pair in peer.iface.endpoint_alternates
-            )
         try:
-            uris.extend(_irspeedy_share_uris(config, link.location_label or peer.name, alternates))
+            uris.extend(_irspeedy_share_uris(
+                config, link.location_label or peer.name, _subscription_alternate_endpoints(peer),
+            ))
         except ValueError:
             return jsonify(error='share_link_unavailable'), 502
 
@@ -30286,6 +30290,20 @@ def irspeedy_subscription_links(token):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'no-referrer'
     return response
+
+
+def _client_config_at_endpoint(config, endpoint):
+    return re.sub(r'(?m)^Endpoint = [^\n]*', lambda _: f'Endpoint = {endpoint}', config, count=1)
+
+
+def _public_inbound_config(peer):
+    endpoint = request.args.get('endpoint')
+    if endpoint is not None and endpoint not in _subscription_alternate_endpoints(peer):
+        abort(404)
+    cfg, error = _peer_client_conf_or_502(peer)
+    if error:
+        return None, error
+    return (_client_config_at_endpoint(cfg, endpoint) if endpoint else cfg), None
 
 
 @app.get('/s/<token>/config', endpoint='subscription_public_config')
@@ -30388,10 +30406,16 @@ def subscription_public_config(token):
 
             used_names.add(normalized)
 
-            z.writestr(
-                entry,
-                cfg,
-            )
+            z.writestr(entry, cfg)
+            for number, endpoint in enumerate(_subscription_alternate_endpoints(peer), start=2):
+                variant = f'{candidate}-endpoint-{number}'
+                entry = f'{variant}.conf'
+                suffix = 2
+                while entry.lower() in used_names:
+                    entry = f'{variant}-{suffix}.conf'
+                    suffix += 1
+                used_names.add(entry.lower())
+                z.writestr(entry, _client_config_at_endpoint(cfg, endpoint))
 
     mem.seek(0)
 
@@ -30445,14 +30469,18 @@ def subscription_public_inbound_config(
 
     peer = link.peer or abort(404)
 
-    cfg, err = _peer_client_conf_or_502(peer)
+    cfg, err = _public_inbound_config(peer)
     if err:
         return err
 
+    name = peer.name or f'peer-{peer.id}'
+    endpoint = request.args.get('endpoint')
+    if endpoint:
+        name = f'{name}-{endpoint}'
     safe_name = re.sub(
         r'[^A-Za-z0-9_.-]+',
         '_',
-        peer.name or f'peer-{peer.id}',
+        name,
     ).strip('._') or f'peer-{peer.id}'
 
     mem = BytesIO(
@@ -30491,7 +30519,7 @@ def subscription_public_inbound_qr(token, link_id):
 
     link = SubscriptionPeer.query.filter_by(id=link_id, subscription_id=sub.id).first() or abort(404)
     peer = link.peer or abort(404)
-    cfg, err = _peer_client_conf_or_502(peer)
+    cfg, err = _public_inbound_config(peer)
     if err:
         return err
     img = qrcode.make(cfg)
