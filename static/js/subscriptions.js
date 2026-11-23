@@ -1895,7 +1895,14 @@ function subxExactTime(value){
 
 function subscriptionConnectionPresentation(s){
   const locs = Array.isArray(s?.locations) ? s.locations : [];
-  const api = s?.connection || {};
+  if(!locs.length) return {cls:'none', label:'No connection', detail:'No configs attached', title:'No AmneziaWG configs are attached to this client.'};
+  const activity = s.runtime_deferred ? SUBS_ACTIVITY.get(s.id) : null;
+  const hasActivity = activity?.link_ids.length === locs.length &&
+    locs.every((loc, i) => loc.link_id === activity.link_ids[i]);
+  if(s.runtime_deferred && !hasActivity && SUBS_ACTIVITY_REQUEST){
+    return {cls:'unknown', label:'Checking connection…', detail:'Reading peer activity', title:'Waiting for AmneziaWG runtime.'};
+  }
+  const api = (hasActivity ? activity.connection : s.connection) || {};
   const connectedLocs = locs.filter(loc => loc?.connected === true || String(loc?.connection_status || loc?.conn_status || '').toLowerCase() === 'connected' || String(loc?.conn_status || '').toLowerCase() === 'online');
   let active = null;
   if(api.active_peer_id != null) active = locs.find(loc => String(loc.peer_id) === String(api.active_peer_id)) || null;
@@ -1903,7 +1910,7 @@ function subscriptionConnectionPresentation(s){
   if(!active) active = locs.slice().sort((a,b)=>(Number(b.latest_handshake)||0)-(Number(a.latest_handshake)||0))[0] || null;
 
   const connected = api.connected === true || connectedLocs.length > 0;
-  const runtimeUnavailable = locs.length > 0 && locs.every(loc => loc.runtime_available === false);
+  const runtimeUnavailable = hasActivity ? api.runtime_count === 0 : locs.every(loc => loc.runtime_available === false);
   const peerName = api.active_peer_name || active?.name || '';
   const scope = api.active_scope || active?.scope || '';
   const nodeName = api.active_node_name || active?.node_name || '';
@@ -1911,7 +1918,6 @@ function subscriptionConnectionPresentation(s){
   const last = api.last_activity_at || active?.last_activity_at || '';
   const where = [scope === 'node' ? (nodeName || 'Node') : (scope === 'local' ? 'Local' : ''), iface].filter(Boolean).join(' / ');
 
-  if(!locs.length) return {cls:'none', label:'No connection', detail:'No configs attached', title:'No AmneziaWG configs are attached to this client.'};
   if(runtimeUnavailable) return {cls:'unknown', label:'Status unavailable', detail:'Runtime could not be reached', title:'The panel could not read the attached AmneziaWG runtime.'};
   if(connected){
     const count = Number(api.connected_count || connectedLocs.length || 1);
@@ -2006,7 +2012,7 @@ function subscriptionCurrentLogState(s){
     return {cls:'connected', label:'Connected', icon:'fa-signal', detail:connection.detail || 'Recent AmneziaWG activity detected.'};
   }
   if(connection.cls === 'unknown'){
-    return {cls:'unknown', label:'Status unavailable', icon:'fa-circle-question', detail:connection.detail || 'WG Panel could not read the AmneziaWG runtime.'};
+    return {cls:'unknown', label:connection.label, icon:'fa-circle-question', detail:connection.detail || 'WG Panel could not read the AmneziaWG runtime.'};
   }
   return {cls:'idle', label:'Connection idle', icon:'fa-circle-pause', detail:connection.detail || 'No recent AmneziaWG activity.'};
 }
@@ -2659,6 +2665,8 @@ function subxScopeOf(s){
 
 let SUBS_PAGE = {page: 1, pages: 1, total: 0, per_page: 8};
 let SUBS_RELOAD_PENDING = false;
+let SUBS_ACTIVITY = new Map();
+let SUBS_ACTIVITY_REQUEST = null;
 let SUBS_SEARCH_TIMER;
 
 function subscriptionPageParams(){
@@ -2784,7 +2792,6 @@ function rowHtml(s){
   const dataPct = unlimited ? 100 : subxRemainingPct(s);
   const timePct = timeInfo.percent;
   const note = s.note || 'Multi-location client';
-  const connection = subscriptionConnectionPresentation(s);
   const scope = subxScopeOf(s);
   const scopeText =
     scope === 'mixed' ? 'Local + nodes' :
@@ -2797,7 +2804,7 @@ function rowHtml(s){
     const contact = [s.phone_number, s.telegram_id ? `Telegram: ${s.telegram_id}` : ''].filter(Boolean).join(' · ');
     return `<article class="subscription-card subscription-bar state-${esc(state.cls)}" data-sub="${s.id}">
       <header class="subscription-bar-identity"><div class="subscription-avatar" aria-hidden="true">${esc((s.name || '?').slice(0,2).toUpperCase())}</div><div><h2>${esc(s.name)}</h2><p>${esc(note)}</p><small>${esc(contact || 'Client #'+s.id)}</small></div></header>
-      <div class="subscription-bar-status"><span class="subscription-label">Access & connection</span><span class="subx-state-pill ${esc(state.cls)}"><i class="fas ${subxIconForState(state.cls)}"></i>${esc(state.label)}</span><span class="subscription-connection ${esc(connection.cls)}" title="${esc(connection.detail)}"><i class="fas fa-circle"></i>${esc(connection.label)}</span><small>${esc(state.sub)}</small></div>
+      <div class="subscription-bar-status"><span class="subscription-label">Access & connection</span><span class="subx-state-pill ${esc(state.cls)}"><i class="fas ${subxIconForState(state.cls)}"></i>${esc(state.label)}</span>${subscriptionConnectionHtml(s, true)}<small>${esc(state.sub)}</small></div>
       <div class="subscription-bar-meter"><span class="subscription-label">Data remaining</span><strong>${esc(dataHeadline)}</strong><meter min="0" max="100" value="${Math.max(0,Math.min(100,dataPct))}" aria-label="Data remaining"></meter><small>${esc(dataDetail)}</small></div>
       <div class="subscription-bar-meter"><span class="subscription-label">${esc(timeInfo.title)}</span><strong>${esc(timeHeadline)}</strong><meter min="0" max="100" value="${Math.max(0,Math.min(100,timePct))}" aria-label="Time remaining"></meter><small>${esc(timeDetail)}</small></div>
       <div class="subscription-bar-network"><span class="subscription-label">Network</span><strong>${esc(inboundText)}</strong><span>${locCount} location${locCount===1?'':'s'} · ${esc(scopeText)}</span><div class="subscription-locations">${network.length?network.map(n=>`<small>${esc(n)}</small>`).join(''):'<small>No configuration attached</small>'}</div></div>
@@ -2810,10 +2817,7 @@ function rowHtml(s){
     <div class="subx-line-id">
       <div class="subx-name"><i class="fas fa-user-shield"></i><span>${esc(s.name)}</span></div>
       <div class="subx-note">${esc(note)}</div>
-      <div class="subx-client-connection ${esc(connection.cls)}" title="${esc(connection.title || '')}">
-        <span class="subx-conn-dot" aria-hidden="true"></span>
-        <span class="subx-conn-copy"><b>${esc(connection.label)}</b><small>${esc(connection.detail)}</small></span>
-      </div>
+      ${subscriptionConnectionHtml(s, false)}
     </div>
 
     <div class="subx-line-body">
@@ -2858,6 +2862,17 @@ function rowHtml(s){
 
     ${subxActionButtons(s)}
   </article>`;
+}
+
+function subscriptionConnectionHtml(s, modern){
+  const connection = subscriptionConnectionPresentation(s);
+  if(modern){
+    return `<span class="subscription-connection ${esc(connection.cls)}" title="${esc(connection.detail)}"><i class="fas fa-circle"></i>${esc(connection.label)}</span>`;
+  }
+  return `<div class="subx-client-connection ${esc(connection.cls)}" title="${esc(connection.title || '')}">
+    <span class="subx-conn-dot" aria-hidden="true"></span>
+    <span class="subx-conn-copy"><b>${esc(connection.label)}</b><small>${esc(connection.detail)}</small></span>
+  </div>`;
 }
 
 function renderSubscriptions(){
@@ -2915,6 +2930,55 @@ function renderSubscriptions(){
   }
 }
 
+function refreshOpenSubscriptionDetails(){
+  if(!detailsIsOpen()) return;
+  const openId = $('#details-modal')?.dataset?.sid;
+  const current = SUBS.find(x=>String(x.id)===String(openId));
+  if(current) renderDetails(current, {keepOpen:true});
+}
+
+async function loadSubscriptionActivity(rows){
+  SUBS_ACTIVITY_REQUEST?.abort();
+  SUBS_ACTIVITY_REQUEST = null;
+  const ids = rows.filter(row => row.runtime_deferred && row.locations?.length).map(row => row.id);
+  if(!ids.length){
+    SUBS_ACTIVITY.clear();
+    return;
+  }
+
+  const controller = new AbortController();
+  const page = subscriptionPageParams().toString();
+  SUBS_ACTIVITY_REQUEST = controller;
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  let activity = new Map();
+  try{
+    const query = new URLSearchParams({ids: ids.join(',')});
+    const response = await fetch('/api/subscriptions/activity?' + query, {
+      credentials:'same-origin', cache:'no-store', signal:controller.signal
+    });
+    if(response.ok){
+      const data = await response.json();
+      activity = new Map(data.subscriptions.map(row => [row.id, row]));
+    }
+  }catch(_){
+    // Keep the subscription list available if runtime cannot be read.
+  }finally{
+    clearTimeout(timeout);
+  }
+
+  if(SUBS_ACTIVITY_REQUEST !== controller) return;
+  SUBS_ACTIVITY_REQUEST = null;
+  if(SUBS !== rows || page !== subscriptionPageParams().toString()) return;
+  SUBS_ACTIVITY = activity;
+  const list = document.getElementById('subs-list');
+  for(const row of rows){
+    const card = list?.querySelector(`[data-sub="${row.id}"]`);
+    const badge = card?.querySelector('.subscription-connection, .subx-client-connection');
+    if(badge) badge.outerHTML = subscriptionConnectionHtml(row, badge.classList.contains('subscription-connection'));
+  }
+  refreshOpenSubscriptionDetails();
+}
+
 async function loadSubs(opts={}){
   if(SUBS_LOADING){
     if(opts.force) SUBS_RELOAD_PENDING = true;
@@ -2925,12 +2989,13 @@ async function loadSubs(opts={}){
   SUBS_LOADING = true;
   if(!SUBS_LAST_JSON) setLiveState('Loading…', 'loading');
   try {
-    const r = await fetch('/api/subscriptions?' + params, {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
+    const r = await fetch('/api/subscriptions?' + params + '&runtime=deferred', {credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(15000)});
     const j = await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(j.detail || j.error || 'Load failed');
 
     if(params !== subscriptionPageParams().toString()) return;
     const next = j.subscriptions || [];
+    if(j.runtime_deferred) next.forEach(row => {row.runtime_deferred = true;});
     SUBS_PAGE = j.pagination;
     SUBX_LIST.page = SUBS_PAGE.page;
     if(next[0]?.display_timezone && typeof window.wgPanelApplyTimezone === 'function') window.wgPanelApplyTimezone(next[0].display_timezone, false);
@@ -2947,6 +3012,7 @@ async function loadSubs(opts={}){
       SUBX_MOBILE_MANAGE_ID = null;
     }
 
+    void loadSubscriptionActivity(SUBS);
     if(opts.force || nextJson !== SUBS_LAST_JSON){
       renderSubscriptions();
       SUBS_LAST_JSON = nextJson;
@@ -2964,11 +3030,7 @@ async function loadSubs(opts={}){
       if(element) element.textContent = value;
     }
 
-    if(detailsIsOpen()){
-      const openId = $('#details-modal')?.dataset?.sid;
-      const current = SUBS.find(x=>String(x.id)===String(openId));
-      if(current) renderDetails(current, {keepOpen:true});
-    }
+    refreshOpenSubscriptionDetails();
     SUBS_FAILURES = 0;
     setLiveState('Up to date');
     const status = document.getElementById('subx-live-state');

@@ -25776,7 +25776,7 @@ def _subscription_peer_runtime(peer):
 
     Local peers are read directly from the local AmneziaWG runtime.
 
-    Node peers are read from the node agent's /api/peers endpoint.
+    Node peers are read from the node agent's counters-only endpoint.
 
     Runtime data is cached on Flask ``g`` for the current HTTP request so:
         - each local AmneziaWG interface is inspected once
@@ -25948,22 +25948,15 @@ def _subscription_peer_runtime(peer):
                 payload = (
                     node_get(
                         node,
-                        '/api/peers',
-                        timeout=8,
+                        '/api/peers?counters_only=1',
+                        timeout=4,
                     )
                     or {}
                 )
 
-                rows = (
-                    payload.get(
-                        'peers'
-                    )
-                    if isinstance(
-                        payload,
-                        dict,
-                    )
-                    else []
-                )
+                if not isinstance(payload, dict) or payload.get('runtime_available') is False:
+                    raise ValueError('Node peer runtime unavailable')
+                rows = payload.get('peers')
 
                 runtime_by_key = {}
 
@@ -26425,7 +26418,7 @@ def _subscription_list_query():
     )
 
 
-def _subscription_row(sub, *, read_only=False):
+def _subscription_row(sub, *, read_only=False, include_runtime=True):
     used = _stored_subscription_usage(sub) if read_only else _sub_used_bytes(sub)
 
     unlimited = bool(
@@ -26686,42 +26679,15 @@ def _subscription_row(sub, *, read_only=False):
             if iface
             else None
         )
-        try:
-            live = _subscription_peer_runtime(
-                peer
-            )
-
-        except Exception:
-            current_app.logger.debug(
-                (
-                    'Could not read subscription runtime '
-                    'for peer_id=%s'
-                ),
-                getattr(
-                    peer,
-                    'id',
-                    '?',
-                ),
-                exc_info=True,
-            )
-
-            live = {
-                'connected': False,
-                'conn_status': 'offline',
-                'connection_status': (
-                    'disconnected'
-                ),
-                'connection_label': (
-                    'Disconnected'
-                ),
-                'conn_reason': (
-                    'runtime_error'
-                ),
-                'latest_handshake': 0,
-                'latest_handshake_age': None,
-                'last_activity_at': None,
-                'runtime_available': False,
-            }
+        live = {'runtime_available': False, 'conn_reason': 'runtime_deferred'}
+        if include_runtime:
+            try:
+                live = _subscription_peer_runtime(peer)
+            except Exception:
+                current_app.logger.debug(
+                    'Could not read subscription runtime for peer_id=%s', peer.id, exc_info=True,
+                )
+                live = {'runtime_available': False, 'conn_reason': 'runtime_error'}
 
         locs.append({
             'link_id': getattr(
@@ -28747,12 +28713,15 @@ def api_subscriptions_inbounds_catalog():
         })
     return jsonify(inbounds=inbounds)
 
-def _subscription_page():
+SUBSCRIPTION_PAGE_MAX = 50
+
+
+def _subscription_page(*, include_runtime=True):
     """Load summary/search fields in one query and hydrate only visible cards."""
     from itertools import groupby
 
     request_page = max(1, request.args.get('page', 1, type=int))
-    per_page = min(50, max(1, request.args.get('per_page', 8, type=int)))
+    per_page = min(SUBSCRIPTION_PAGE_MAX, max(1, request.args.get('per_page', 8, type=int)))
     focus = request.args.get('focus', type=int)
     search = request.args.get('q', '').strip().lower()
     status_filter = request.args.get('status', 'all')
@@ -28764,20 +28733,26 @@ def _subscription_page():
     ), 0)
     matches = []
 
-    overview = (
-        db.session.query(
-            Subscription, Peer.id.label('peer_id'), Peer.status, Peer.used_bytes_total,
-            Peer.name.label('peer_name'), Peer.address, Peer.endpoint,
-            InterfaceConfig.name.label('interface_name'), InterfaceConfig.node_id,
-            Node.name.label('node_name'), SubscriptionPeer.location_label,
+    overview = db.session.query(
+        Subscription, Peer.id.label('peer_id'), Peer.status, Peer.used_bytes_total,
+    ).options(load_only(
+        Subscription.id, Subscription.created_at, Subscription.enabled, Subscription.unlimited,
+        Subscription.data_limit_value, Subscription.data_limit_unit, Subscription.time_limit_days,
+        Subscription.start_on_first_use, Subscription.timer_started_at, Subscription.first_used_at,
+        *((Subscription.name, Subscription.note, Subscription.phone_number, Subscription.telegram_id) if search else ()),
+    )).outerjoin(
+        SubscriptionPeer, SubscriptionPeer.subscription_id == Subscription.id,
+    ).outerjoin(Peer, Peer.id == SubscriptionPeer.peer_id)
+    if search or scope_filter != 'all':
+        overview = overview.add_columns(InterfaceConfig.name.label('interface_name'), InterfaceConfig.node_id).outerjoin(
+            InterfaceConfig, InterfaceConfig.id == Peer.iface_id,
         )
-        .outerjoin(SubscriptionPeer, SubscriptionPeer.subscription_id == Subscription.id)
-        .outerjoin(Peer, Peer.id == SubscriptionPeer.peer_id)
-        .outerjoin(InterfaceConfig, InterfaceConfig.id == Peer.iface_id)
-        .outerjoin(Node, Node.id == InterfaceConfig.node_id)
-        .order_by(Subscription.created_at.desc(), Subscription.id.desc())
-        .yield_per(500)
-    )
+    if search:
+        overview = overview.add_columns(
+            Peer.name.label('peer_name'), Peer.address, Peer.endpoint,
+            Node.name.label('node_name'), SubscriptionPeer.location_label,
+        ).outerjoin(Node, Node.id == InterfaceConfig.node_id)
+    overview = overview.order_by(Subscription.created_at.desc(), Subscription.id.desc()).yield_per(500)
     for sub, entries in groupby(overview, key=lambda entry: entry[0]):
         links = [entry for entry in entries if entry.peer_id is not None]
         used = sum(int(link.used_bytes_total or 0) for link in links)
@@ -28809,27 +28784,29 @@ def _subscription_page():
         summary['expired'] += reason == 'expired'
         summary['exhausted'] += reason == 'data_exhausted'
 
-        low_data = bool(limit and round(used / limit * 100, 2) >= 79.5)
-        expiring = bool(expiry and 0 < expiry - now <= 3 * 86400)
         if status_filter in ('ready', 'blocked', 'disabled') and status != status_filter:
             continue
         if (status_filter == 'empty' and links
-                or status_filter == 'low-data' and not low_data
-                or status_filter == 'expiring' and not expiring):
+                or status_filter == 'low-data' and not (limit and round(used / limit * 100, 2) >= 79.5)
+                or status_filter == 'expiring' and not (expiry and 0 < expiry - now <= 3 * 86400)):
+            continue
+        if not search and scope_filter == 'all':
+            matches.append(sub.id)
             continue
 
         scopes = set()
-        terms = [sub.name, sub.note, sub.phone_number, sub.telegram_id]
+        terms = [sub.name, sub.note, sub.phone_number, sub.telegram_id] if search else []
         for link in links:
             name = link.interface_name or ''
             legacy_node = name.startswith('n') and ':' in name
             scope = 'node' if link.node_id is not None or legacy_node else 'local'
             scopes.add(scope)
-            terms.extend((
-                link.peer_name, name.split(':', 1)[-1] if legacy_node else name,
-                link.address, link.endpoint, link.location_label, link.node_name,
-                scope, link.status or 'offline',
-            ))
+            if search:
+                terms.extend((
+                    link.peer_name, name.split(':', 1)[-1] if legacy_node else name,
+                    link.address, link.endpoint, link.location_label, link.node_name,
+                    scope, link.status or 'offline',
+                ))
         if scope_filter != 'all' and (
             (scope_filter == 'mixed' and len(scopes) != 2)
             or (scope_filter != 'mixed' and scope_filter not in scopes)
@@ -28847,11 +28824,18 @@ def _subscription_page():
     visible = matches[(page - 1) * per_page:page * per_page]
     rows = _subscription_list_query().filter(Subscription.id.in_(visible)).all() if visible else []
     by_id = {sub.id: sub for sub in rows}
-    return {
-        'subscriptions': [_subscription_row(by_id[sid], read_only=True) for sid in visible if sid in by_id],
+    subscriptions = [
+        _subscription_row(by_id[sid], read_only=True, include_runtime=include_runtime)
+        for sid in visible if sid in by_id
+    ]
+    result = {
+        'subscriptions': subscriptions,
         'pagination': {'page': page, 'per_page': per_page, 'pages': pages, 'total': total},
         'summary': summary,
     }
+    if not include_runtime:
+        result['runtime_deferred'] = True
+    return result
 
 
 def _irspeedy_local_interface(name, legacy_id):
@@ -29031,10 +29015,34 @@ def api_irspeedy_subscriptions():
 def api_subscriptions():
     if request.method == 'GET':
         if 'page' in request.args:
-            return jsonify(_subscription_page())
+            return jsonify(_subscription_page(include_runtime=request.args.get('runtime') != 'deferred'))
         rows = _subscription_list_query().order_by(Subscription.created_at.desc(), Subscription.id.desc()).all()
         return jsonify(subscriptions=[_subscription_row(sub, read_only=True) for sub in rows])
     return _create_subscription(request.get_json(silent=True) or {})
+
+
+@app.get('/api/subscriptions/activity')
+@require_api_key_or_login
+def api_subscriptions_activity():
+    ids = request.args.get('ids', '').split(',', SUBSCRIPTION_PAGE_MAX)
+    if len(ids) > SUBSCRIPTION_PAGE_MAX or any(
+        not re.fullmatch(r'[1-9][0-9]{0,9}', sid) or int(sid) > 2147483647 for sid in ids
+    ):
+        return jsonify(error='invalid_subscription_ids'), 400
+
+    subscriptions = []
+    rows = _subscription_list_query().filter(Subscription.id.in_({int(sid) for sid in ids})).all()
+    for sub in rows:
+        row = _subscription_row(sub, read_only=True)
+        subscriptions.append({
+            'id': sub.id,
+            'link_ids': [loc['link_id'] for loc in row['locations']],
+            'connection': row['connection'],
+        })
+    response = jsonify(subscriptions=subscriptions)
+    response.cache_control.private = True
+    response.cache_control.no_store = True
+    return response
 
 
 def _create_subscription(data, provision_token=None, node_inventory=None, *, expand_all=False):

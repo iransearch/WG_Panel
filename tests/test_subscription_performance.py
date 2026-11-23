@@ -104,6 +104,63 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(payload['summary']['total'], 12)
             self.assertEqual(payload['subscriptions'][0]['name'], 'Client 11')
 
+    def test_page_can_load_before_peer_runtime(self):
+        self.add_clients(3)
+        local, remote, hidden = Peer.query.order_by(Peer.id).all()
+        node = Node(name='Edge', base_url='https://edge.example.test', api_key='test-key')
+        remote.iface = InterfaceConfig(
+            name='edge-wg', node=node, path='/tmp/edge-wg.conf', address='10.2.0.1/24',
+            listen_port=51820, private_key='fixture',
+        )
+        hidden.status = 'blocked'
+        visible = {
+            peer.subscription_links[0].subscription_id: peer.subscription_links[0].id
+            for peer in (local, remote)
+        }
+        local_id, remote_id = visible.keys()
+        db.session.commit()
+
+        with patch.object(self.panel, '_wg_runtime_snapshot') as local_runtime, patch.object(
+            self.panel, 'node_get',
+            return_value={'peers': [{'public_key': 'public-1', 'latest_handshake': self.panel.now_ts()}]},
+        ) as node_get:
+            response = self.client.get(
+                '/api/subscriptions?page=1&runtime=deferred&status=ready', headers=self.headers,
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json
+            self.assertTrue(payload['runtime_deferred'])
+            self.assertEqual(payload['summary']['total'], 3)
+            self.assertEqual({row['id'] for row in payload['subscriptions']}, set(visible))
+            self.assertTrue(all(row['connection']['runtime_count'] == 0 for row in payload['subscriptions']))
+            local_runtime.assert_not_called()
+            node_get.assert_not_called()
+
+            activity_path = f'/api/subscriptions/activity?ids={local_id},{remote_id}'
+            self.assertEqual(self.client.get(activity_path).status_code, 401)
+            with self.panel.app.app_context():
+                local_runtime.side_effect = TimeoutExpired('awg', 2)
+                activity = self.client.get(activity_path, headers=self.headers)
+            self.assertEqual(activity.status_code, 200)
+            self.assertEqual(activity.headers['Cache-Control'], 'private, no-store')
+            rows = {row['id']: row for row in activity.json['subscriptions']}
+            self.assertEqual(set(rows), set(visible))
+            self.assertEqual(set(rows[remote_id]), {'id', 'link_ids', 'connection'})
+            self.assertEqual(rows[remote_id]['link_ids'], [visible[remote_id]])
+            self.assertTrue(rows[remote_id]['connection']['connected'])
+            self.assertEqual(rows[local_id]['connection']['runtime_count'], 0)
+            local_runtime.assert_called_once_with(['test-awg'])
+            self.assertEqual(node_get.call_args.args[1], '/api/peers?counters_only=1')
+            self.assertEqual(node_get.call_args.kwargs['timeout'], 4)
+
+            with self.panel.app.app_context():
+                node_get.return_value = {'peers': [], 'runtime_available': False}
+                unavailable = self.client.get(
+                    f'/api/subscriptions/activity?ids={remote_id}', headers=self.headers,
+                )
+            self.assertEqual(unavailable.json['subscriptions'][0]['connection']['runtime_count'], 0)
+            self.assertEqual(self.client.get('/api/subscriptions/activity?ids=1,0', headers=self.headers).status_code, 400)
+
     def test_dashboard_subscription_summary_counts_policies_without_peer_runtime(self):
         path = '/api/dashboard/subscription-summary'
         with self.panel.app.app_context():
