@@ -77,7 +77,7 @@
   <p id="sub-purge-counts"></p>
   <ul id="sub-purge-failures" hidden></ul>
   <form id="sub-purge-form" hidden>
-    <p>This permanently deletes all subscriptions and all peers managed by this panel, including standalone peers on local interfaces and nodes.</p>
+    <p>This permanently deletes all subscriptions and all peers managed by this panel, including standalone peers on local interfaces and nodes. Peer records linked to deleted nodes are cleared from the panel database.</p>
     <label for="sub-purge-confirm">Type <strong>DELETE ALL</strong> to confirm.</label>
     <input id="sub-purge-confirm" class="input" type="text" required autocomplete="off" spellcheck="false" />
     <button class="btn danger" type="submit" disabled>Delete all clients</button>
@@ -384,5 +384,5 @@
 
 
 
-<script defer src="{{ url_for('static', filename='js/subscriptions.js', v='subscription-purge-1') }}"></script>
+<script defer src="{{ url_for('static', filename='js/subscriptions.js', v='subscription-purge-2') }}"></script>
 {% endblock %}

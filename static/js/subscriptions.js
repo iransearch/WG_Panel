@@ -4279,7 +4279,8 @@ window.addEventListener('wgpanel:diagnosis-changed',()=>loadSubs({force:true}));
     const peerCount = `${job.peers_removed.toLocaleString()} / ${job.peers_total.toLocaleString()} peers removed`;
     const subCount = `${job.subscriptions_removed.toLocaleString()} / ${job.subscriptions_total.toLocaleString()} subscriptions removed`;
     const remaining = job.remaining ? ` · ${job.remaining.peers} peers and ${job.remaining.subscriptions} subscriptions remaining` : '';
-    counts.textContent = `${peerCount} · ${subCount}${remaining}`;
+    const orphaned = job.orphaned_peers_removed ? ' · ' + job.orphaned_peers_removed.toLocaleString() + ' orphaned peers cleared from the panel' : '';
+    counts.textContent = `${peerCount} · ${subCount}${orphaned}${remaining}`;
 
     if (job.stage === 'removing_peers') {
       stage.textContent = `Removing peers on ${job.scope === 'node' ? 'node interface' : 'local interface'} ${job.target}…`;

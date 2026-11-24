@@ -29343,23 +29343,21 @@ def _subscription_purge_status():
     return state
 
 
-def _purge_peer_batch(iface, rows):
+def _purge_peer_runtime(iface, rows, node, ids):
     keys = {_valid_wg_key(row.public_key) for row in rows}
     if '' in keys:
         raise PeerRemovalError('validation', 'The interface contains an invalid peer public key.')
     dev = iface_devname(iface)
     if not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', dev or '') or dev in {'.', '..'}:
         raise PeerRemovalError('validation', 'The interface name is invalid.')
-    ids = [row.id for row in rows]
-    is_node = _iface_is_node(iface)
-    node_id = _node_id_from_iface(iface) if is_node else None
+    node_id = node.id if node is not None else None
     blocked = {str(host) for row in rows if row.status in ('offline', 'blocked')
                and (host := _safe_ip(row.address)) is not None}
     if blocked:
         # Routes belong to the host, so keep routes still used by other peers on that host.
         same_host = (
             or_(InterfaceConfig.node_id == node_id, InterfaceConfig.name.like(f'n{node_id}:%'))
-            if is_node and node_id is not None else
+            if node_id is not None else
             and_(InterfaceConfig.node_id.is_(None), ~InterfaceConfig.name.contains(':'))
         )
         others = db.session.query(Peer.address_host).join(InterfaceConfig, Peer.iface_id == InterfaceConfig.id).filter(
@@ -29367,10 +29365,7 @@ def _purge_peer_batch(iface, rows):
         )
         blocked.difference_update(address for (address,) in others)
 
-    if is_node:
-        node = db.session.get(Node, node_id) if node_id is not None else None
-        if node is None:
-            raise PeerRemovalError('node', 'The node for this interface is missing.')
+    if node is not None:
         try:
             result = node_post(node, f'/api/iface/{dev}/peers/remove',
                                {'public_keys': sorted(keys), 'blocked_addresses': sorted(blocked)}, timeout=(4, 140))
@@ -29386,12 +29381,24 @@ def _purge_peer_batch(iface, rows):
         remove_interface_peers(dev, iface.path, keys, _write_conf_atomic)
         remove_peer_blackholes({ipaddress.ip_address(address) for address in blocked})
 
+
+def _purge_peer_batch(iface, rows):
+    ids = [row.id for row in rows]
+    remote = _iface_is_node(iface)
+    node_id = _node_id_from_iface(iface) if remote else None
+    if remote and node_id is None:
+        raise PeerRemovalError('node', 'The node for this interface could not be identified.')
+    node = db.session.get(Node, node_id) if node_id is not None else None
+    orphaned = remote and node is None
+    if not orphaned:
+        _purge_peer_runtime(iface, rows, node, ids)
+
     _delete_shortlinks_for_peer_ids(ids)
     SubscriptionPeer.query.filter(SubscriptionPeer.peer_id.in_(ids)).delete(synchronize_session=False)
     PeerEvent.query.filter(PeerEvent.peer_id.in_(ids)).delete(synchronize_session=False)
     removed = Peer.query.filter(Peer.id.in_(ids)).delete(synchronize_session=False)
     db.session.commit()
-    return removed
+    return removed, removed if orphaned else 0
 
 
 def _run_subscription_purge(state, lock):
@@ -29421,7 +29428,9 @@ def _run_subscription_purge(state, lock):
                             ).order_by(Peer.id).limit(PEER_REMOVAL_BATCH).all()
                             if not rows:
                                 break
-                            save(peers_removed=state['peers_removed'] + _purge_peer_batch(iface, rows))
+                            removed, orphaned = _purge_peer_batch(iface, rows)
+                            save(peers_removed=state['peers_removed'] + removed,
+                                 orphaned_peers_removed=state['orphaned_peers_removed'] + orphaned)
                             cursor = rows[-1].id
                 except Exception as exc:
                     db.session.rollback()
@@ -29483,7 +29492,7 @@ def api_subscription_purge():
         return jsonify(error='purge_in_progress', detail='A deletion is already in progress.'), 409
     try:
         state = dict(snapshot, id=secrets.token_hex(8), status='running', stage='starting',
-                     peers_removed=0, subscriptions_removed=0, failures=[])
+                     peers_removed=0, orphaned_peers_removed=0, subscriptions_removed=0, failures=[])
         _write_json_atomic(str(_subscription_purge_state_file()), state)
         threading.Thread(target=_run_subscription_purge, args=(state.copy(), lock),
                          name='subscription-purge', daemon=True).start()

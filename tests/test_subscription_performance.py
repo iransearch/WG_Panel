@@ -524,6 +524,7 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             state = self.client.get(url).json['job']
             self.assertEqual(state['status'], 'partial', state)
             self.assertEqual(state['peers_removed'], 1)
+            self.assertEqual(state['orphaned_peers_removed'], 0)
             self.assertEqual(state['remaining'], {'peers': 2, 'subscriptions': 1})
             self.assertEqual(state['failures'][0]['interface'], f'n{node_id}:awg0')
             self.assertEqual(conf.read_text(), original + unmanaged + late_block)
@@ -547,6 +548,53 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(SubscriptionPeer.query.count(), 0)
             self.assertEqual(conf.read_text().rstrip(), (original + unmanaged).rstrip())
             self.assertEqual(node_post.call_args.args[1:], ('/api/iface/awg0/peers/remove', {'public_keys': [keys[1]], 'blocked_addresses': ['10.70.0.2']}))
+
+    def test_bulk_subscription_purge_clears_records_on_deleted_nodes(self):
+        for index, name in ((1, 'awg0'), (2, 'awg100')):
+            node = Node(name=f'Deleted {index}', base_url=f'https://edge{index}.example.test', api_key='unused')
+            db.session.add(node)
+            db.session.flush()
+            iface = InterfaceConfig(
+                name=f'n{node.id}:{name}', node=node, path=f'/etc/amnezia/amneziawg/{name}.conf',
+                address='10.70.0.1/24', listen_port=51820, private_key='(remote)',
+            )
+            peer = Peer(name=f'Peer {index}', iface=iface, address='10.70.0.2/32',
+                        public_key='unusable-legacy-key', private_key='fixture', status='offline')
+            sub = Subscription(name=f'Client {index}', token=f'deleted-node-{index}')
+            db.session.add(SubscriptionPeer(subscription=sub, peer=peer))
+            db.session.flush()
+            db.session.add_all((PeerEvent(peer_id=peer.id, event='created'),
+                                ShortLink(peer_id=peer.id, token=f'deleted-peer-{index}')))
+            db.session.commit()
+            db.session.delete(node)
+            db.session.commit()
+            self.assertIsNone(iface.node_id)
+
+        state = dict(id='test-purge', status='running', stage='starting',
+                     peer_limit=db.session.query(self.panel.func.max(Peer.id)).scalar(),
+                     subscription_limit=db.session.query(self.panel.func.max(Subscription.id)).scalar(),
+                     peers_total=2, subscriptions_total=2, peers_removed=0, orphaned_peers_removed=0,
+                     subscriptions_removed=0, failures=[])
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(self.panel, '_subscription_purge_state_file', return_value=Path(directory) / 'job.json'),
+            patch.object(self.panel, '_ALLOC_LOCK_DIR', directory),
+            patch.object(self.panel, '_purge_peer_runtime') as runtime,
+        ):
+            self.panel._run_subscription_purge(state, self.panel._subscription_purge_lock())
+            job = self.panel._subscription_purge_status()
+            runtime.assert_not_called()
+
+        self.assertEqual(job['status'], 'complete')
+        self.assertEqual(job['peers_removed'], 2)
+        self.assertEqual(job['orphaned_peers_removed'], 2)
+        self.assertEqual(job['subscriptions_removed'], 2)
+        self.assertEqual(job['remaining'], {'peers': 0, 'subscriptions': 0})
+        self.assertEqual(job['failures'], [])
+        db.session.remove()
+        self.assertEqual(SubscriptionPeer.query.count(), 0)
+        self.assertEqual(ShortLink.query.count(), 0)
+        self.assertEqual(PeerEvent.query.count(), 0)
 
     def test_node_client_dns_controls_exports_independently_from_agent_dns(self):
         node = Node(name='DNS node', base_url='https://node.example.test', api_key='node')
