@@ -10,7 +10,7 @@ from threading import Barrier, get_ident
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from zipfile import ZipFile
 
 from cryptography.fernet import Fernet
@@ -428,8 +428,31 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             clear = self.client.post(path, headers=self.headers, json={'dns': ''})
             self.assertEqual(clear.status_code, 200, clear.json)
             self.assertIsNone(self.panel.find_iface(conf).dns)
+            self.panel._copy_local_iface_from_parsed(iface, self.panel.find_iface(str(conf)))
+            db.session.commit()
+            self.assertEqual(self.client.get(path, headers=self.headers).json['dns'], '')
+
+            def exported_dns():
+                share = self.client.get('/s/interface-dns-test/links')
+                self.assertEqual(share.status_code, 200, share.get_data(as_text=True))
+                return parse_qs(urlsplit(share.get_data(as_text=True).strip()).query).get('dns')
+
+            self.assertIsNone(exported_dns())
+            config_path = f'/s/interface-dns-test/inbound/{subscription.links[0].id}/config'
+            client_config = self.client.get(config_path)
+            self.assertEqual(client_config.status_code, 200)
+            self.assertNotIn(b'DNS = ', client_config.data)
+
+            peer.dns = '9.9.9.9'
+            db.session.commit()
+            self.assertEqual(exported_dns(), ['9.9.9.9'])
+            peer.dns = None
+            db.session.commit()
+
+            inherit = self.client.post(path, headers=self.headers, json={'dns': None})
+            self.assertEqual(inherit.status_code, 200, inherit.json)
             self.assertIsNone(self.client.get(path, headers=self.headers).json['dns'])
-            self.assertIn('dns=1.0.0.1', self.client.get('/s/interface-dns-test/links').get_data(as_text=True))
+            self.assertEqual(exported_dns(), ['1.0.0.1'])
 
     def test_interface_schema_keeps_existing_client_endpoints(self):
         local, _ = self.add_irspeedy_interfaces()

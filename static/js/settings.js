@@ -857,6 +857,11 @@ document.getElementById('rt-restart')
         input.closest('.iface-field-card')?.classList.toggle('is-readonly', input.readOnly);
       }
     }
+    const dnsDefaultOption = $('#i-dns-default-option');
+    if (dnsDefaultOption) dnsDefaultOption.hidden = scope === 'node';
+    const dnsDefault = $('#i-dns-default');
+    if (dnsDefault) dnsDefault.disabled = scope === 'node' || !save;
+
     const listenPort = $('#i-listen');
     if (listenPort) listenPort.disabled = !save;
     if (btnUp) { btnUp.dataset.scope = scope; btnUp.dataset.target = String(target ?? ''); }
@@ -879,7 +884,10 @@ document.getElementById('rt-restart')
     set('i-path',    meta?.path ?? '');
     set('i-address', meta?.address ?? '');
     if (IFACE_SCOPE === 'local' || !listenPortEdited) set('i-listen', meta?.listen_port ?? '');
-    set('i-dns',     meta?.dns ?? '');
+    const dnsInput = $('#i-dns');
+    if (dnsInput) dnsInput.value = meta?.dns ?? '';
+    const dnsDefault = $('#i-dns-default');
+    if (dnsDefault) dnsDefault.checked = meta?.dns == null;
     set('i-mtu',     meta?.mtu ?? '');
     const setEditable = (id, v) => {
       const el = document.getElementById(id);
@@ -1286,15 +1294,20 @@ document.getElementById('rt-restart')
       await saveNodeListenPort(iid);
       return;
     }
+    const dns = ($('#i-dns')?.value || '').trim();
     const payload = {
       listen_port: Number($('#i-listen')?.value || 0) || null,
-      dns:   ($('#i-dns')?.value || '').trim() || null,
+      dns: dns || ($('#i-dns-default')?.checked ? null : ''),
       mtu:   Number($('#i-mtu')?.value || 0) || null
     };
     try {
       await jfetch(`/api/iface/${iid}`, { method:'POST', body: payload });
       toast('Interface saved', 'success');
-      refreshIfaceStatusLocal(iid);
+      if (IFACE_SCOPE === 'local' && $('#iface-select')?.value === iid) {
+        const dnsDefault = $('#i-dns-default');
+        if (dnsDefault) dnsDefault.checked = payload.dns === null;
+        refreshIfaceStatusLocal(iid);
+      }
     } catch (e) { toast('Save failed: ' + e.message, 'error'); }
   });
 

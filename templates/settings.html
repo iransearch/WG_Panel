@@ -1780,7 +1780,11 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
                     placeholder="8.8.8.8, 8.8.4.4"
                     aria-describedby="i-dns-help"
                   />
-                  <small id="i-dns-help">Separate DNS servers with commas. Leave empty to use the panel default.</small>
+                  <small id="i-dns-help">Separate DNS servers with commas. Leave empty and uncheck below to omit DNS for peers without their own DNS.</small>
+                  <label id="i-dns-default-option" for="i-dns-default">
+                    <input type="checkbox" id="i-dns-default" />
+                    Use panel DNS when empty
+                  </label>
                 </div>
 
                 <div class="form-group iface-field-card is-editable">
@@ -3139,7 +3143,7 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
     </script>
     <script
       defer
-      src="{{ url_for('static', filename='js/settings.js', v='client-endpoints-1') }}"
+      src="{{ url_for('static', filename='js/settings.js', v='interface-dns-2') }}"
     ></script>
     <script
       defer

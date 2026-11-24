@@ -397,7 +397,11 @@ db.init_app(app)
 register_profile_routes(app)
 
 def _effective_dns(peer):
-    return (peer.dns or getattr(peer.iface, 'dns', None) or _panel_default_dns())
+    if peer.dns:
+        return peer.dns
+    iface_dns = getattr(peer.iface, 'dns', None)
+    # NULL inherits the profile. An empty string explicitly omits DNS.
+    return _panel_default_dns() if iface_dns is None else iface_dns
 
 #---------------
 # logging
@@ -10374,7 +10378,9 @@ def _copy_local_iface_from_parsed(existing, parsed):
     existing.listen_port = parsed.listen_port
     existing.private_key = new_priv
     existing.mtu = parsed.mtu
-    existing.dns = parsed.dns
+    # A missing DNS line preserves an explicit export opt-out stored in the panel.
+    if parsed.dns is not None or existing.dns != '':
+        existing.dns = parsed.dns
     existing.post_up = parsed.post_up
     existing.post_down = parsed.post_down
     pk = _derive_wg_public_key(new_priv)
@@ -16510,7 +16516,7 @@ def iface_settings(iid):
             dns = ', '.join(part.strip() for part in dns.split(',') if part.strip())
             if len(dns) > 128:
                 raise ValueError('DNS must be at most 128 characters.')
-            updates['dns'] = dns or None
+            updates['dns'] = None if dns_value is None else dns
 
         if 'mtu' in data:
             updates['mtu'] = optional_int(
@@ -16655,7 +16661,7 @@ def iface_settings(iid):
                 managed_keys = {names[key].lower() for key in updates}
                 additions = [
                     f"{names[key]} = {updates[key]}\n"
-                    for key in names if key in updates and updates[key] is not None
+                    for key in names if key in updates and updates[key] not in (None, '')
                 ]
                 output = []
                 in_interface = found_interface = False
