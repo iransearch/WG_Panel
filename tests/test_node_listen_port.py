@@ -135,3 +135,40 @@ def test_failed_port_change_keeps_config_and_restores_runtime(node, monkeypatch,
     assert response.status_code == (500 if write_fails else 409)
     assert set_port.call_args_list == [call("awg0", 51821), call("awg0", 51819)]
     assert config.read_text() == CONFIG
+
+
+def test_peer_batch_removes_only_targeted_live_and_persisted_peers(node, monkeypatch):
+    from base64 import b64encode
+
+    client, config, _ = node
+    first, second, untouched = [b64encode(bytes([i]) * 32).decode() for i in (1, 2, 3)]
+    other = config.with_name('awg1.conf')
+    other.write_text(CONFIG.replace('peer-fixture', first))
+    base = CONFIG.split('[Peer]')[0]
+    blocks = {key: f'[Peer] # client\nPublicKey = {key} # key\nAllowedIPs = 10.1.1.2/32\n'
+              for key in (first, second, untouched)}
+    config.write_text(base + ''.join(blocks.values()))
+    read_runtime = Mock(side_effect=[
+        'awg0 awg1\n', f'{first}\n{second}\n{untouched}\n', untouched,
+        '[{"dst":"10.1.1.2"},{"dst":"10.1.1.3"},{"dst":"10.1.0.0/16"}]',
+    ])
+    monkeypatch.setattr(node_agent.subprocess, 'check_output', read_runtime)
+    run = Mock()
+    monkeypatch.setattr(node_agent.subprocess, 'run', run)
+    url = '/api/iface/awg0/peers/remove'
+    payload = {'public_keys': [first, second], 'blocked_addresses': ['10.1.1.2']}
+    headers = {'Authorization': 'Bearer test-node-key'}
+
+    assert client.post(url, json=payload).status_code == 401
+    assert client.post(url, json={'public_keys': ['bad']}, headers=headers).status_code == 400
+    response = client.post(url, json=payload, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json['verified'] == 2
+    assert run.call_count == 2
+    remove, routes = run.call_args_list
+    assert remove.args[0] == ['awg', 'set', 'awg0', 'peer', first, 'remove', 'peer', second, 'remove']
+    assert routes.args[0] == ['ip', '-4', '-batch', '-']
+    assert routes.kwargs['input'] == 'route del blackhole 10.1.1.2/32\n'
+    assert config.read_text() == base + blocks[untouched]
+    assert first in other.read_text()

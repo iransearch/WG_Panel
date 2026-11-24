@@ -29,7 +29,10 @@ INSTANCE_DIR = os.path.join(BASE_DIR, "instance")
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 from config import Config
 from panel_core.database import bundle_database
-from agent.awg_config import new_interface_lines, parameter_lines, read_parameters
+from agent.awg_config import (
+    PEER_REMOVAL_BATCH, new_interface_lines, parameter_lines, read_parameters, remove_interface_peers,
+    remove_peer_blackholes,
+)
 import time as _geo_time
 from urllib.parse import urlparse as _geo_urlparse
 from models import (
@@ -57,6 +60,7 @@ from sqlalchemy import or_, and_, text, inspect, func, event
 from sqlalchemy.orm import joinedload, load_only, selectinload
 from flask_compress import Compress
 from flask_wtf.csrf import CSRFProtect, generate_csrf
+from itsdangerous import BadData, URLSafeTimedSerializer
 from urllib.parse import quote, urlparse, urljoin
 import secrets
 import pyotp
@@ -29302,6 +29306,192 @@ def api_subscription_remove_inbound(sid, link_id):
     _sync_all_subscription_peers(sub, rename=True)
     db.session.commit()
     return jsonify(ok=True, subscription=_subscription_row(sub))
+
+def _subscription_purge_state_file():
+    return Path(app.instance_path) / 'subscription-purge.json'
+
+
+def _subscription_purge_lock():
+    handle = _subscription_purge_state_file().with_suffix('.lock').open('a')
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    except OSError:
+        handle.close()
+        raise
+    return handle
+
+
+def _subscription_purge_status():
+    def read():
+        try:
+            return json.loads(_subscription_purge_state_file().read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return None
+
+    state = read()
+    if state and state['status'] == 'running':
+        lock = _subscription_purge_lock()
+        if lock is not None:
+            with lock:
+                state = read()
+                if state['status'] == 'running':
+                    state.update(status='failed', stage='interrupted',
+                                 detail='The panel stopped before completing the purge. Review and retry.')
+    return state
+
+
+def _purge_peer_batch(iface, rows):
+    keys = {_valid_wg_key(row.public_key) for row in rows}
+    if '' in keys:
+        raise PeerRemovalError('validation', 'The interface contains an invalid peer public key.')
+    dev = iface_devname(iface)
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', dev or '') or dev in {'.', '..'}:
+        raise PeerRemovalError('validation', 'The interface name is invalid.')
+    ids = [row.id for row in rows]
+    is_node = _iface_is_node(iface)
+    node_id = _node_id_from_iface(iface) if is_node else None
+    blocked = {str(host) for row in rows if row.status in ('offline', 'blocked')
+               and (host := _safe_ip(row.address)) is not None}
+    if blocked:
+        # Routes belong to the host, so keep routes still used by other peers on that host.
+        same_host = (
+            or_(InterfaceConfig.node_id == node_id, InterfaceConfig.name.like(f'n{node_id}:%'))
+            if is_node and node_id is not None else
+            and_(InterfaceConfig.node_id.is_(None), ~InterfaceConfig.name.contains(':'))
+        )
+        others = db.session.query(Peer.address_host).join(InterfaceConfig, Peer.iface_id == InterfaceConfig.id).filter(
+            same_host, Peer.address_host.in_(blocked), Peer.id.not_in(ids),
+        )
+        blocked.difference_update(address for (address,) in others)
+
+    if is_node:
+        node = db.session.get(Node, node_id) if node_id is not None else None
+        if node is None:
+            raise PeerRemovalError('node', 'The node for this interface is missing.')
+        try:
+            result = node_post(node, f'/api/iface/{dev}/peers/remove',
+                               {'public_keys': sorted(keys), 'blocked_addresses': sorted(blocked)}, timeout=(4, 140))
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code in (404, 405):
+                raise PeerRemovalError('node', 'Update this node agent to enable bulk peer removal.') from exc
+            raise PeerRemovalError('node', 'The node rejected the batch or could not complete peer removal.') from exc
+        except requests.RequestException as exc:
+            raise PeerRemovalError('node', 'The node is unreachable. Review and retry when it is online.') from exc
+        if not isinstance(result, dict) or result.get('ok') is not True or result.get('verified') != len(keys):
+            raise PeerRemovalError('node', 'The node did not verify removal of the full batch.')
+    else:
+        remove_interface_peers(dev, iface.path, keys, _write_conf_atomic)
+        remove_peer_blackholes({ipaddress.ip_address(address) for address in blocked})
+
+    _delete_shortlinks_for_peer_ids(ids)
+    SubscriptionPeer.query.filter(SubscriptionPeer.peer_id.in_(ids)).delete(synchronize_session=False)
+    PeerEvent.query.filter(PeerEvent.peer_id.in_(ids)).delete(synchronize_session=False)
+    removed = Peer.query.filter(Peer.id.in_(ids)).delete(synchronize_session=False)
+    db.session.commit()
+    return removed
+
+
+def _run_subscription_purge(state, lock):
+    def save(**changes):
+        state.update(changes)
+        _write_json_atomic(str(_subscription_purge_state_file()), state)
+
+    with lock, app.app_context():
+        try:
+            peer_limit = state['peer_limit']
+            iface_ids = db.session.query(Peer.iface_id).filter(
+                Peer.id <= peer_limit,
+            ).distinct().order_by(Peer.iface_id).all()
+            for (iface_id,) in iface_ids:
+                iface = db.session.get(InterfaceConfig, iface_id)
+                if iface is None:
+                    continue
+                scope = 'node' if _iface_is_node(iface) else 'local'
+                label = iface.name
+                save(stage='removing_peers', target=label, scope=scope)
+                cursor = 0
+                try:
+                    with interface_allocation_lock(iface):
+                        while True:
+                            rows = db.session.query(Peer.id, Peer.public_key, Peer.address, Peer.status).filter(
+                                Peer.iface_id == iface_id, Peer.id > cursor, Peer.id <= peer_limit,
+                            ).order_by(Peer.id).limit(PEER_REMOVAL_BATCH).all()
+                            if not rows:
+                                break
+                            save(peers_removed=state['peers_removed'] + _purge_peer_batch(iface, rows))
+                            cursor = rows[-1].id
+                except Exception as exc:
+                    db.session.rollback()
+                    app.logger.exception('Subscription purge failed for interface %s', label)
+                    detail = str(exc) if isinstance(exc, PeerRemovalError) else 'Could not finish removing peers on this interface.'
+                    save(failures=state['failures'] + [{'interface': label, 'detail': detail}])
+
+            save(stage='removing_subscriptions', target=None, scope=None)
+            eligible = Subscription.query.filter(
+                Subscription.id <= state['subscription_limit'],
+                ~db.exists().where(SubscriptionPeer.subscription_id == Subscription.id),
+            )
+            removed = eligible.delete(synchronize_session=False)
+            remaining = {
+                'peers': Peer.query.count(),
+                'subscriptions': Subscription.query.count(),
+            }
+            db.session.commit()
+            app.logger.warning('Subscription purge %s removed %s peers and %s subscriptions',
+                               state['id'], state['peers_removed'], removed)
+            save(stage='finished', status='partial' if any(remaining.values()) else 'complete',
+                 subscriptions_removed=removed, remaining=remaining)
+        except Exception:
+            db.session.rollback()
+            app.logger.exception('Subscription purge %s failed', state['id'])
+            save(status='failed', stage='failed', detail='The purge stopped. Review the saved progress and retry.')
+
+
+@app.route('/api/subscriptions/purge', methods=['GET', 'POST'])
+@admin_required
+def api_subscription_purge():
+    signer = URLSafeTimedSerializer(app.secret_key, salt='subscription-purge')
+    if request.method == 'GET':
+        state = _subscription_purge_status()
+        if request.args.get('preview') != '1' or (state and state['status'] == 'running'):
+            return jsonify(job=state)
+        peer_limit, peers = db.session.query(func.max(Peer.id), func.count(Peer.id)).one()
+        subscription_limit, subscriptions = db.session.query(
+            func.max(Subscription.id), func.count(Subscription.id),
+        ).one()
+        snapshot = {
+            'peer_limit': peer_limit or 0, 'peers_total': peers,
+            'subscription_limit': subscription_limit or 0, 'subscriptions_total': subscriptions,
+        }
+        return jsonify(job=state, preview={**snapshot, 'token': signer.dumps(snapshot)})
+
+    csrf.protect()
+    data = request.get_json(silent=True)
+    if (not isinstance(data, dict) or data.get('confirmation') != 'DELETE ALL'
+            or not isinstance(data.get('preview'), str)):
+        return jsonify(error='confirmation_required', detail='Type DELETE ALL to confirm.'), 400
+    try:
+        snapshot = signer.loads(data['preview'], max_age=300)
+    except BadData:
+        return jsonify(error='preview_expired', detail='Open the deletion preview again.'), 400
+
+    lock = _subscription_purge_lock()
+    if lock is None:
+        return jsonify(error='purge_in_progress', detail='A deletion is already in progress.'), 409
+    try:
+        state = dict(snapshot, id=secrets.token_hex(8), status='running', stage='starting',
+                     peers_removed=0, subscriptions_removed=0, failures=[])
+        _write_json_atomic(str(_subscription_purge_state_file()), state)
+        threading.Thread(target=_run_subscription_purge, args=(state.copy(), lock),
+                         name='subscription-purge', daemon=True).start()
+    except Exception:
+        lock.close()
+        raise
+    return jsonify(job=state), 202
+
 
 @app.delete('/api/subscriptions/<int:sid>')
 @require_api_key_or_login

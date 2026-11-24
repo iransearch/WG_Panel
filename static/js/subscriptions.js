@@ -4238,3 +4238,156 @@ async function openDiagnosisClient(id){
 
 window.wgOpenSubscriptionDiagnosisEditor=(id)=>{if(!SUBS.some(s=>String(s.id)===String(id)))return false;openDiagnosisClient(id);return true;};
 window.addEventListener('wgpanel:diagnosis-changed',()=>loadSubs({force:true}));
+
+(function bindSubscriptionPurge(){
+  const open = $('#open-sub-purge');
+  if (!open) return;
+  const url = '/api/subscriptions/purge';
+  const dialog = $('#sub-purge-dialog');
+  const form = $('#sub-purge-form');
+  const input = $('#sub-purge-confirm');
+  const submit = form.querySelector('[type="submit"]');
+  const stage = $('#sub-purge-stage');
+  const counts = $('#sub-purge-counts');
+  const progress = $('#sub-purge-progress');
+  const failures = $('#sub-purge-failures');
+  const label = open.querySelector('span');
+  let token;
+  let timer;
+  let active = false;
+  let opening = false;
+  let starting = false;
+  let revision = 0;
+
+  async function requestPurge(path, options){
+    const response = await fetch(path, {
+      credentials:'same-origin', cache:'no-store', signal:AbortSignal.timeout(12000), ...options,
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || 'Could not read bulk deletion status.');
+    return result;
+  }
+
+  function showJob(job){
+    if (!job) return;
+    active = job.status === 'running';
+    label.textContent = active ? 'Deletion in progress' : 'Delete all clients';
+    progress.hidden = false;
+    progress.max = Math.max(job.peers_total, 1);
+    if (job.stage === 'starting' || job.stage === 'removing_subscriptions') progress.removeAttribute('value');
+    else progress.value = job.status === 'complete' ? progress.max : job.peers_removed;
+    const peerCount = `${job.peers_removed.toLocaleString()} / ${job.peers_total.toLocaleString()} peers removed`;
+    const subCount = `${job.subscriptions_removed.toLocaleString()} / ${job.subscriptions_total.toLocaleString()} subscriptions removed`;
+    const remaining = job.remaining ? ` · ${job.remaining.peers} peers and ${job.remaining.subscriptions} subscriptions remaining` : '';
+    counts.textContent = `${peerCount} · ${subCount}${remaining}`;
+
+    if (job.stage === 'removing_peers') {
+      stage.textContent = `Removing peers on ${job.scope === 'node' ? 'node interface' : 'local interface'} ${job.target}…`;
+    } else if (job.stage === 'removing_subscriptions') {
+      stage.textContent = 'Removing subscriptions and checking what remains…';
+    } else if (job.status === 'complete') {
+      stage.textContent = 'Deletion complete.';
+    } else if (job.status === 'partial') {
+      stage.textContent = 'Some records remain. Review the result before starting another deletion.';
+    } else {
+      stage.textContent = job.detail || 'Preparing deletion…';
+    }
+
+    failures.replaceChildren(...job.failures.map(failure => {
+      const item = document.createElement('li');
+      item.textContent = `${failure.interface} · ${failure.detail}`;
+      return item;
+    }));
+    failures.hidden = !job.failures.length;
+  }
+
+  function startPolling(){
+    clearTimeout(timer);
+    timer = setTimeout(poll, 850);
+  }
+
+  async function poll(){
+    if (opening || starting) return;
+    const requestedRevision = revision;
+    try {
+      const {job} = await requestPurge(url);
+      if (requestedRevision !== revision || !job) return;
+      const wasActive = active;
+      showJob(job);
+      if (active) startPolling();
+      else if (wasActive) loadSubs({force:true});
+    } catch (err) {
+      if (requestedRevision !== revision || !active) return;
+      if (dialog.open) stage.textContent = err.message + ' Retrying…';
+      if (active) startPolling();
+    }
+  }
+
+  open.addEventListener('click', async () => {
+    if (opening || starting) return;
+    opening = true;
+    revision += 1;
+    clearTimeout(timer);
+    token = null;
+    form.hidden = true;
+    input.value = '';
+    submit.disabled = true;
+    stage.textContent = 'Counting subscriptions and peers…';
+    counts.textContent = '';
+    progress.hidden = true;
+    failures.hidden = true;
+    dialog.showModal();
+    try {
+      const {preview, job} = await requestPurge(url + '?preview=1');
+      if (job) showJob(job);
+      if (preview?.peers_total || preview?.subscriptions_total) {
+        token = preview.token;
+        counts.textContent = `${preview.subscriptions_total.toLocaleString()} subscriptions and ${preview.peers_total.toLocaleString()} peers selected for deletion.`;
+        if (!job) stage.textContent = '';
+        form.hidden = false;
+      } else if (preview && !job) {
+        stage.textContent = 'There are no clients to delete.';
+      }
+    } catch (err) {
+      stage.textContent = err.message;
+    } finally {
+      opening = false;
+      if (active) startPolling();
+    }
+  });
+
+  input.addEventListener('input', () => {
+    submit.disabled = !token || input.value !== 'DELETE ALL' || starting;
+  });
+  $('#sub-purge-close').addEventListener('click', () => dialog.close());
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (!token || starting || input.value !== 'DELETE ALL') return;
+    starting = true;
+    revision += 1;
+    form.hidden = true;
+    stage.textContent = 'Starting deletion…';
+    progress.hidden = false;
+    progress.removeAttribute('value');
+    try {
+      const {job} = await requestPurge(url, {
+        method:'POST', headers:csrfHeaders(true),
+        body:JSON.stringify({preview:token, confirmation:input.value}),
+      });
+      showJob(job);
+    } catch (err) {
+      stage.textContent = err.message;
+      progress.hidden = true;
+      // The server may have started after the browser timed out.
+      try {
+        const {job} = await requestPurge(url);
+        if (job?.status === 'running') showJob(job);
+      } catch (_) {}
+    } finally {
+      starting = false;
+      if (active) startPolling();
+    }
+  });
+
+  void poll();
+})();

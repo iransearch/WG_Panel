@@ -15,9 +15,15 @@ import requests
 import hmac
 
 if __package__:
-    from .awg_config import new_interface_lines, read_parameters
+    from .awg_config import (
+        PEER_REMOVAL_BATCH, config_without_peers, new_interface_lines, read_parameters,
+        remove_interface_peers, remove_peer_blackholes,
+    )
 else:
-    from awg_config import new_interface_lines, read_parameters
+    from awg_config import (
+        PEER_REMOVAL_BATCH, config_without_peers, new_interface_lines, read_parameters,
+        remove_interface_peers, remove_peer_blackholes,
+    )
 
 try:
     from dotenv import load_dotenv
@@ -5216,29 +5222,48 @@ def _live_peer_keys(iface):
 def _delete_peer_from_config(path, pub):
     with open(path, encoding='utf-8', errors='surrogateescape', newline='') as source:
         original = source.read()
-    lines = original.splitlines(keepends=True)
-    retained = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        index += 1
-        if line.partition('#')[0].strip().lower() != '[peer]':
-            retained.append(line)
-            continue
-
-        block = [line]
-        while index < len(lines) and not lines[index].lstrip().startswith('['):
-            block.append(lines[index])
-            index += 1
-        if not any(
-            key.strip().lower() == 'publickey' and value.strip() == pub
-            for key, _, value in (line.partition('#')[0].partition('=') for line in block)
-        ):
-            retained.extend(block)
-
-    updated = ''.join(retained)
+    updated = config_without_peers(original, {pub})
     if updated != original:
         _write_conf_atomic(path, updated)
+
+
+@app.post('/api/iface/<name>/peers/remove')
+@require_api_key
+def remove_iface_peer_batch(name):
+    try:
+        name = _safe_iface_name(name)
+    except ValueError:
+        return jsonify(error='invalid_iface', detail='Invalid interface name.'), 400
+    data = request.get_json(silent=True)
+    keys = data.get('public_keys') if isinstance(data, dict) else None
+    if (not isinstance(keys, list) or not 1 <= len(keys) <= PEER_REMOVAL_BATCH
+            or any(not isinstance(key, str) or not _valid_wg_key(key) for key in keys)):
+        return jsonify(error='invalid_public_keys', detail='Send a valid batch of peer public keys.'), 400
+
+    addresses = data.get('blocked_addresses', [])
+    if (not isinstance(addresses, list) or len(addresses) > PEER_REMOVAL_BATCH
+            or any(not isinstance(address, str) for address in addresses)):
+        return jsonify(error='invalid_peer_addresses', detail='Send valid peer IP addresses.'), 400
+    try:
+        hosts = {ipa.ip_address(address) for address in addresses}
+        if any(getattr(host, 'scope_id', None) for host in hosts):
+            raise ValueError
+    except ValueError:
+        return jsonify(error='invalid_peer_addresses', detail='Send valid peer IP addresses.'), 400
+
+    keys = {_valid_wg_key(key) for key in keys}
+    path = _iface_conf_path(name)
+    try:
+        with _node_ops_locked(), _iface_config_lock(path, blocking=False):
+            remove_interface_peers(name, path, keys, _write_conf_atomic)
+            remove_peer_blackholes(hosts)
+    except BlockingIOError:
+        return jsonify(error='interface_busy', detail='The interface is busy. Retry shortly.'), 409
+    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError):
+        app.logger.exception('Could not remove peer batch on %s', name)
+        return jsonify(error='peer_removal_incomplete',
+                       detail='The node could not verify removal of this peer batch.'), 502
+    return jsonify(ok=True, verified=len(keys))
 
 
 @app.route('/api/peer', methods=['DELETE'])

@@ -8,6 +8,7 @@ from pathlib import Path
 from subprocess import TimeoutExpired
 from threading import Barrier, get_ident
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
@@ -17,7 +18,7 @@ from cryptography.fernet import Fernet
 from requests import ConnectionError
 from sqlalchemy import event, inspect, text
 
-from models import AdminAccount, InterfaceConfig, Node, OperationEvent, Peer, Subscription, SubscriptionPeer, db
+from models import AdminAccount, InterfaceConfig, Node, OperationEvent, Peer, PeerEvent, ShortLink, Subscription, SubscriptionPeer, db
 
 
 class SubscriptionPerformanceTests(unittest.TestCase):
@@ -453,6 +454,99 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual(inherit.status_code, 200, inherit.json)
             self.assertIsNone(self.client.get(path, headers=self.headers).json['dns'])
             self.assertEqual(exported_dns(), ['1.0.0.1'])
+
+    def test_bulk_subscription_purge_preserves_failed_node_and_snapshot_boundary(self):
+        local, _ = self.add_irspeedy_interfaces()
+        node = Node(name='Edge', base_url='https://node.example.test', api_key='node-key')
+        admin = AdminAccount(username='purge-admin', password_hash='unused')
+        db.session.add_all((node, admin))
+        db.session.flush()
+        node_id = node.id
+        mirror = InterfaceConfig(
+            name=f'n{node_id}:awg0', node=node, path='/etc/amnezia/amneziawg/awg0.conf',
+            address='10.70.0.1/24', listen_port=51820, private_key='(remote)',
+        )
+        keys = [b64encode(bytes([i]) * 32).decode() for i in range(1, 5)]
+        standalone = Peer(name='Standalone', iface=local, address='10.60.0.2/32',
+                          public_key=keys[0], private_key=keys[0], status='online')
+        remote = Peer(name='Remote', iface=mirror, address='10.70.0.2/32',
+                      public_key=keys[1], private_key=keys[1])
+        sub = Subscription(name='Node subscriber', token='bulk-purge-node')
+        db.session.add_all((standalone, SubscriptionPeer(subscription=sub, peer=remote)))
+        db.session.flush()
+        db.session.add_all((PeerEvent(peer_id=standalone.id, event='created'),
+                            ShortLink(peer_id=standalone.id, token='bulk-purge-shortlink')))
+        db.session.commit()
+        conf = Path(local.path)
+        original = conf.read_text()
+
+        def section(key):
+            return f'\n[Peer]\nPublicKey = {key}\nAllowedIPs = 10.60.0.2/32\n'
+
+        unmanaged = section(keys[2])
+        late_block = section(keys[3])
+        conf.write_text(original + section(keys[0]) + unmanaged + late_block)
+        url = '/api/subscriptions/purge'
+        with self.panel.app.app_context():
+            self.assertEqual(self.client.get(url).status_code, 401)
+        with self.client.session_transaction() as session:
+            session['_user_id'] = str(admin.id)
+            session['_fresh'] = True
+        self.assertEqual(self.client.post(url, json={'confirmation': 'DELETE ALL'}).status_code, 400)
+
+        jobs = []
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(self.panel, '_subscription_purge_state_file', return_value=Path(directory) / 'job.json'),
+            patch.object(self.panel, '_ALLOC_LOCK_DIR', directory),
+            patch.object(self.panel.csrf, 'protect'),
+            patch.object(self.panel.threading, 'Thread', side_effect=lambda target, args, **kwargs:
+                         SimpleNamespace(start=lambda: jobs.append((target, args)))),
+            patch.object(self.panel.subprocess, 'check_output', return_value=''),
+            patch.object(self.panel, 'node_post', side_effect=ConnectionError) as node_post,
+        ):
+            preview = self.client.get(url + '?preview=1').json['preview']
+            self.assertEqual((preview['peers_total'], preview['subscriptions_total']), (2, 1))
+            invalid = self.client.post(url, json={'preview': preview['token'], 'confirmation': 'DELETE'})
+            self.assertEqual(invalid.status_code, 400)
+            late = Peer(name='Late peer', iface=local, address='10.60.0.3/32',
+                        public_key=keys[3], private_key=keys[3], status='online')
+            db.session.add(late)
+            db.session.commit()
+            body = {'preview': preview['token'], 'confirmation': 'DELETE ALL'}
+            self.assertEqual(self.client.post(url, json=body).status_code, 202)
+            self.assertEqual(self.client.post(url, json=body).status_code, 409)
+            self.assertEqual(self.client.get(url).json['job']['status'], 'running')
+
+            target, args = jobs.pop()
+            target(*args)
+            db.session.remove()
+            state = self.client.get(url).json['job']
+            self.assertEqual(state['status'], 'partial', state)
+            self.assertEqual(state['peers_removed'], 1)
+            self.assertEqual(state['remaining'], {'peers': 2, 'subscriptions': 1})
+            self.assertEqual(state['failures'][0]['interface'], f'n{node_id}:awg0')
+            self.assertEqual(conf.read_text(), original + unmanaged + late_block)
+            self.assertEqual(ShortLink.query.count(), 0)
+            self.assertEqual(PeerEvent.query.count(), 0)
+            self.assertEqual({row.name for row in Peer.query}, {'Remote', 'Late peer'})
+
+            node_post.side_effect = None
+            node_post.return_value = {'ok': True, 'verified': 1}
+            retry = self.client.get(url + '?preview=1').json['preview']
+            self.assertEqual(self.client.post(url, json={
+                'preview': retry['token'], 'confirmation': 'DELETE ALL',
+            }).status_code, 202)
+            target, args = jobs.pop()
+            target(*args)
+            db.session.remove()
+            state = self.client.get(url).json['job']
+            self.assertEqual(state['status'], 'complete', state)
+            self.assertEqual(state['remaining'], {'peers': 0, 'subscriptions': 0})
+            self.assertEqual(state['subscriptions_removed'], 1)
+            self.assertEqual(SubscriptionPeer.query.count(), 0)
+            self.assertEqual(conf.read_text().rstrip(), (original + unmanaged).rstrip())
+            self.assertEqual(node_post.call_args.args[1:], ('/api/iface/awg0/peers/remove', {'public_keys': [keys[1]], 'blocked_addresses': ['10.70.0.2']}))
 
     def test_node_client_dns_controls_exports_independently_from_agent_dns(self):
         node = Node(name='DNS node', base_url='https://node.example.test', api_key='node')

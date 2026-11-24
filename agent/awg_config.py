@@ -1,6 +1,7 @@
 """AmneziaWG interface settings shared by the panel and Node."""
 import base64
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -211,6 +212,90 @@ def _main():
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             parser.exit(1, f"{path.stem}: {error}\n")
         print(f"{path.stem}: active with the default AWG profile. Backup: {backup}")
+
+
+PEER_REMOVAL_BATCH = 4096
+
+
+def config_without_peers(config, public_keys):
+    """Remove only peer blocks whose public keys are in the confirmed batch."""
+    def retain(block):
+        if not block or block[0].partition('#')[0].strip().lower() != '[peer]':
+            return True
+        return not any(
+            key.strip().lower() == 'publickey' and value.strip() in public_keys
+            for key, _, value in (line.partition('#')[0].partition('=') for line in block[1:])
+        )
+
+    output = []
+    block = []
+    for line in config.splitlines(keepends=True):
+        if line.lstrip().startswith('['):
+            if retain(block):
+                output.extend(block)
+            block = []
+        block.append(line)
+    if retain(block):
+        output.extend(block)
+    return ''.join(output)
+
+
+def remove_interface_peers(name, path, public_keys, write_config):
+    """Remove a batch from runtime and disk, with verification before the caller deletes its records."""
+    try:
+        with open(path, encoding='utf-8', errors='surrogateescape', newline='') as handle:
+            original = handle.read()
+    except FileNotFoundError:
+        original = None
+    active = subprocess.check_output(
+        ['awg', 'show', 'interfaces'], stderr=subprocess.PIPE, timeout=8, text=True,
+    ).split()
+    if name in active:
+        def live_keys():
+            return set(subprocess.check_output(
+                ['awg', 'show', name, 'peers'], stderr=subprocess.PIPE, timeout=8, text=True,
+            ).split())
+
+        removing = sorted(public_keys & live_keys())
+        for offset in range(0, len(removing), 512):
+            command = ['awg', 'set', name]
+            for key in removing[offset:offset + 512]:
+                command.extend(('peer', key, 'remove'))
+            subprocess.run(command, capture_output=True, timeout=12, check=True)
+        if removing and public_keys & live_keys():
+            raise RuntimeError('Some peers are still present in the AmneziaWG runtime.')
+
+    if original is not None:
+        updated = config_without_peers(original, public_keys)
+        if updated != original:
+            write_config(path, updated)
+
+
+def remove_peer_blackholes(addresses):
+    """Remove exact host blackholes left behind by disabled peers."""
+    for version in (4, 6):
+        hosts = {address for address in addresses if address.version == version}
+        if not hosts:
+            continue
+        family = f'-{version}'
+        output = subprocess.check_output(
+            ['ip', family, '-j', 'route', 'show', 'type', 'blackhole'],
+            stderr=subprocess.PIPE, timeout=8, text=True,
+        )
+        routes = []
+        for route in json.loads(output):
+            try:
+                network = ipaddress.ip_network(route.get('dst', ''), strict=False)
+            except ValueError:
+                continue
+            if network.prefixlen == network.max_prefixlen and network.network_address in hosts:
+                routes.append(f'route del blackhole {network}')
+        if routes:
+            subprocess.run(
+                ['ip', family, '-batch', '-'], input='\n'.join(routes) + '\n',
+                text=True, capture_output=True, timeout=15, check=True,
+            )
+
 
 
 if __name__ == "__main__":
