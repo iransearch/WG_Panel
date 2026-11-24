@@ -1,7 +1,7 @@
 {% extends 'base.html' %} {% block head_extras %}
 <link
   rel="stylesheet"
-  href="{{ url_for('static', filename='css/nodes.css') }}"
+  href="{{ url_for('static', filename='css/nodes.css', v='setup-diagnostics-1') }}"
 />
 {% endblock %} {% block responsive_extras %}{% endblock %} {% block content %}
 <div class="nodes-page">
@@ -443,5 +443,5 @@
     };
   })();
 </script>
-<script defer src="{{ url_for('static', filename='js/nodes.js') }}"></script>
+<script defer src="{{ url_for('static', filename='js/nodes.js', v='setup-diagnostics-1') }}"></script>
 {% endblock %}

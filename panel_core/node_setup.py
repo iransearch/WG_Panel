@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import deque
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -45,13 +46,20 @@ if [ ! -f "$root/.panel-provision-repo" ]; then
     staging=$(mktemp -d /opt/wg-panel-node.XXXXXX)
     trap 'rm -rf -- "$staging"' EXIT
     export DEBIAN_FRONTEND=noninteractive GIT_TERMINAL_PROMPT=0 NEEDRESTART_MODE=a
-    apt-get update && apt-get install -y git ca-certificates python3 || exit 1
+    echo 'WG_STEP:apt-get update (bootstrap)'
+    apt-get update
+    echo 'WG_STEP:apt-get install git ca-certificates python3'
+    apt-get install -y git ca-certificates python3
+    echo 'WG_STEP:git clone WG_Panel'
     git clone --depth 1 --branch main https://github.com/iransearch/WG_Panel.git "$staging"
+    echo "WG_STEP:Move installer to /opt/wg-panel-node"
     touch "$staging/.panel-provision-repo"
     mv -T "$staging" "$root"
 elif [ ! -f "$root/.panel-setup" ] || [ ! -f "$root/agent/.env" ]; then
+    echo "WG_STEP:git pull --ff-only origin main"
     git -C "$root" pull --ff-only origin main
 fi
+echo "WG_STEP:Start agent/node_provision.py"
 exec python3 "$root/agent/node_provision.py" "$@"
 """
 
@@ -84,7 +92,9 @@ DEFAULT_AWG_PORT = 51820
 
 
 class SetupError(Exception):
-    pass
+    def __init__(self, message, *, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
 class SetupConflict(SetupError):
@@ -245,10 +255,18 @@ def _check_dns(settings):
     try:
         addresses = {ipaddress.ip_address(result[4][0]) for result in
                      socket.getaddrinfo(settings["domain"], 80, type=socket.SOCK_STREAM)}
-    except OSError:
-        addresses = set()
+    except OSError as exc:
+        raise SetupError("The node domain could not be resolved.", diagnostics={
+            "step": "Resolve node domain", "output": [_clean_diagnostic(str(exc))],
+        }) from None
     if addresses != {ipaddress.ip_address(settings["ip"])}:
-        raise SetupError("Point the domain directly to the server IP. Check its A and AAAA records and disable DNS proxying.")
+        resolved = ", ".join(sorted(str(address) for address in addresses)) or "No addresses"
+        raise SetupError(
+            "Point the domain directly to the server IP. Check its A and AAAA records and disable DNS proxying.",
+            diagnostics={"step": "Resolve node domain", "output": [
+                f"Expected IP: {settings['ip']}", f"Resolved IPs: {resolved}",
+            ]},
+        )
 
 
 def _connect_ssh(settings, password, directory):
@@ -287,12 +305,42 @@ def _connect_ssh(settings, password, directory):
     except paramiko.AuthenticationException:
         client.close()
         raise SetupError("SSH authentication failed. Check the username and password.") from None
-    except (OSError, paramiko.SSHException):
+    except (OSError, paramiko.SSHException) as exc:
         client.close()
-        raise SetupError("Could not connect over SSH. Check the IP, port and server firewall.") from None
+        raise SetupError("Could not connect over SSH. Check the IP, port and server firewall.", diagnostics={
+            "step": "Connect over SSH",
+            "output": [_clean_diagnostic(f"{type(exc).__name__}: {exc}", (password, password.strip()))],
+        }) from None
 
 
-def _ssh_run(client, argv, *, password=None, on_line=None, timeout=25):
+_ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~])")
+_SECRET_FIELD = re.compile(
+    r"(?i)\b[\w.-]*(?:password|secret|token|api[ _-]?key|private[ _-]?key|preshared[ _-]?key|authorization)"
+    r"[\w.-]*[\"']?\s*[:=]"
+)
+_URL_CREDENTIALS = re.compile(r"(\b[a-zA-Z][a-zA-Z\d+.-]*://)[^/\s@]+@")
+_URL_QUERY = re.compile(r"(\b[a-zA-Z][a-zA-Z\d+.-]*://[^\s?\"'#]+)[?#][^\s\"']*")
+
+
+def _clean_diagnostic(value, secrets=()):
+    for secret in secrets:
+        if secret:
+            value = value.replace(secret, "[redacted]")
+    value = _ANSI.sub("", value)
+    value = "".join(char for char in value if char.isprintable() or char in "\t\n")
+    if _SECRET_FIELD.search(value) or re.search(r"(?i)\b(?:bearer\s+|WG_API_KEY|BEGIN .*PRIVATE KEY)", value):
+        return "[redacted credential line]"
+    if re.fullmatch(r"[A-Za-z0-9_+/=-]{28,}", value.strip()):
+        return "[redacted key-like line]"
+    for secret in secrets:
+        if secret:
+            value = value.replace(secret, "[redacted]")
+    value = _URL_CREDENTIALS.sub(r"\1[redacted]@", value)
+    value = _URL_QUERY.sub(r"\1?[redacted]", value)
+    return value.strip()[:500]
+
+
+def _ssh_run(client, argv, *, password=None, on_line=None, on_stderr=None, timeout=25):
     channel = client.get_transport().open_session(timeout=15)
     with channel:
         channel.settimeout(15)
@@ -301,54 +349,93 @@ def _ssh_run(client, argv, *, password=None, on_line=None, timeout=25):
             channel.sendall((password + "\n").encode())
         channel.shutdown_write()
 
-        # Drain both streams to keep SSH flow control moving. Keep arbitrary
-        # installer output out of the job response and panel logs.
-        output = bytearray()
+        def reader(callback):
+            pending = bytearray()
+            overflow = False
+
+            def feed(data, final=False):
+                nonlocal overflow
+                lines = data.split(b"\n")
+                for index, part in enumerate(lines):
+                    if len(pending) + len(part) > 8192:
+                        overflow = True
+                    if not overflow:
+                        pending.extend(part)
+                    if final or index < len(lines) - 1:
+                        if callback and (pending or overflow):
+                            callback(b"[installer line exceeded 8 KiB]" if overflow else bytes(pending).strip())
+                        pending.clear()
+                        overflow = False
+            return feed
+
+        stdout, stderr = reader(on_line), reader(on_stderr)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if channel.recv_stderr_ready():
-                channel.recv_stderr(32768)
             if channel.recv_ready():
-                output.extend(channel.recv(32768))
-                while (newline := output.find(b"\n")) >= 0:
-                    line = bytes(output[:newline]).strip()
-                    del output[:newline + 1]
-                    if on_line:
-                        on_line(line)
-                if len(output) > 8192:
-                    output.clear()
-            if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
-                if output and on_line:
-                    on_line(bytes(output).strip())
-                return channel.recv_exit_status()
+                stdout(channel.recv(32768))
+            if channel.recv_stderr_ready():
+                stderr(channel.recv_stderr(32768))
             if not channel.recv_ready() and not channel.recv_stderr_ready():
+                if channel.exit_status_ready():
+                    stdout(b"", final=True)
+                    stderr(b"", final=True)
+                    return channel.recv_exit_status()
                 select.select([channel], [], [], 0.2)
+        stdout(b"", final=True)
+        stderr(b"", final=True)
     raise SetupError("The SSH installer timed out.")
 
 
 def _install(client, settings, password, stage):
+    api_keys, errors = [], []
+    tail = deque(maxlen=32)
+    step = "Check SSH user ID"
+
+    def diagnostic_output(line):
+        if line:
+            tail.append(line.decode("utf-8", errors="replace"))
+
+    def failure(message, code=None):
+        secrets = (password, password.strip(), *api_keys)
+        return SetupError(message, diagnostics={
+            "step": _clean_diagnostic(step, secrets),
+            "exit_code": code,
+            "output": [clean for line in tail if (clean := _clean_diagnostic(line, secrets))],
+        })
+
     uid = []
-    if _ssh_run(client, ["id", "-u"], on_line=uid.append) != 0:
-        raise SetupError("Could not check the SSH user’s privileges.")
+    code = _ssh_run(client, ["id", "-u"], on_line=uid.append, on_stderr=diagnostic_output)
+    if code != 0:
+        raise failure("Could not check the SSH user’s privileges.", code)
     sudo, secret = [], None
     if uid != [b"0"]:
+        step = "Check sudo access"
         sudo = ["sudo", "-n", "--"]
-        if _ssh_run(client, [*sudo, "true"]) != 0:
+        if _ssh_run(client, [*sudo, "true"], on_stderr=diagnostic_output) != 0:
             sudo, secret = ["sudo", "-S", "-p", "", "--"], password
-            if _ssh_run(client, [*sudo, "true"], password=secret) != 0:
-                raise SetupError("The SSH user must be root or have sudo access with its SSH password.")
-
-    api_keys, errors = [], []
+            code = _ssh_run(client, [*sudo, "true"], password=secret, on_stderr=diagnostic_output)
+            if code != 0:
+                raise failure("The SSH user must be root or have sudo access with its SSH password.", code)
+    tail.clear()
+    step = "Run remote installer"
 
     def monitor(line):
+        nonlocal step
         if line.startswith(b"WG_STAGE:"):
             name = line[9:].decode("ascii", errors="ignore")
             if name in REMOTE_STAGES:
                 stage(name)
+        elif line.startswith(b"WG_STEP:"):
+            step = line[8:].decode("utf-8", errors="replace")[:500]
         elif line.startswith(b"WG_ERROR:"):
-            errors.append(REMOTE_ERRORS.get(line[9:].decode("ascii", errors="ignore")))
-        elif re.fullmatch(rb"WG_API_KEY:[A-Za-z0-9_-]{24}", line):
-            api_keys.append(line[11:].decode("ascii"))
+            error = REMOTE_ERRORS.get(line[9:].decode("ascii", errors="ignore"))
+            if error:
+                errors.append(error)
+        elif line.startswith(b"WG_API_KEY:"):
+            if re.fullmatch(rb"WG_API_KEY:[A-Za-z0-9_-]{24}", line):
+                api_keys.append(line[11:].decode("ascii"))
+        else:
+            diagnostic_output(line)
 
     command = [
         *sudo, "flock", "-n", "-E", "73", "/run/lock/wg-panel-node-setup.lock",
@@ -357,11 +444,20 @@ def _install(client, settings, password, stage):
         settings.get("interface_name", DEFAULT_NODE_INTERFACE),
         settings.get("interface_address", LEGACY_NODE_ADDRESS),
     ]
-    code = _ssh_run(client, command, password=secret, on_line=monitor, timeout=2700)
+    try:
+        code = _ssh_run(client, command, password=secret, on_line=monitor,
+                        on_stderr=diagnostic_output, timeout=2700)
+    except SetupError as exc:
+        raise failure(str(exc)) from None
+    except Exception as exc:
+        diagnostic_output(f"{type(exc).__name__}: {exc}".encode())
+        raise failure("The SSH installer connection failed.") from None
     if code == 73:
-        raise SetupError("A setup is already running on the server.")
-    if code != 0 or len(api_keys) != 1:
-        raise SetupError(next((error for error in errors if error), "The installer failed during this step. Check the server and retry."))
+        raise failure("A setup is already running on the server.", code)
+    if code != 0:
+        raise failure(errors[-1] if errors else f"The installer exited with code {code}.", code)
+    if len(api_keys) != 1:
+        raise failure("The installer did not return exactly one valid node API key.", code)
     return api_keys[0]
 
 
@@ -386,20 +482,32 @@ def _verify_node(settings, api_key):
                     retries=False, redirect=False, preload_content=False,
                 )
                 with response:
-                    health = json.loads(response.read(65536)) if response.status == 200 else {}
-                if health.get("ok") is True and any(
-                    iface.get("name") == interface_name
-                    and iface.get("is_up") is True
-                    and (interface_address is None or iface.get("address") == interface_address)
-                    for iface in health.get("interfaces", [])
-                ):
-                    return
-            except (urllib3.exceptions.HTTPError, OSError, ValueError, AttributeError, TypeError):
-                pass
+                    status = response.status
+                    health = json.loads(response.read(65536)) if status == 200 else {}
+                if status != 200:
+                    reason = f"Node API returned HTTP {status}."
+                elif health.get("ok") is not True:
+                    reason = "Node API did not report a healthy state."
+                else:
+                    matching = [iface for iface in health.get("interfaces", []) if iface.get("name") == interface_name]
+                    if any(iface.get("is_up") is True
+                           and (interface_address is None or iface.get("address") == interface_address)
+                           for iface in matching):
+                        return
+                    if not matching:
+                        reason = f"The node did not report interface {interface_name}."
+                    else:
+                        iface = matching[0]
+                        reason = (f"{interface_name} reported address {iface.get('address')} and "
+                                  f"is_up={iface.get('is_up')}. Expected {interface_address} and is_up=True.")
+            except (urllib3.exceptions.HTTPError, OSError, ValueError, AttributeError, TypeError) as exc:
+                reason = f"{type(exc).__name__}: {exc}"
             if attempt < 4:
                 time.sleep(2)
-    raise SetupError(f"The panel could not verify HTTPS and the requested configuration on {interface_name}. "
-                     "Check the certificate, API port and interface address.")
+    raise SetupError(
+        f"The panel could not verify HTTPS and the requested configuration on {interface_name}.",
+        diagnostics={"step": "GET /api/health", "output": [_clean_diagnostic(reason, (api_key,))]},
+    )
 
 
 def _run_job(path):
@@ -437,10 +545,10 @@ def _run_job(path):
             raise SetupConflict(str(exc)) from None
         update("done", "done", "Node installed, verified and added to the panel.", node_id=node_id)
     except SetupError as exc:
-        update("failed", state["stage"], str(exc))
-    except Exception:
+        update("failed", state["stage"], str(exc), diagnostics=exc.diagnostics)
+    except Exception as exc:
         label = STATUSES.get(state["stage"], "Starting the installer")
-        update("failed", state["stage"], f"{label} failed. Check the server and retry.")
+        update("failed", state["stage"], f"{label} failed ({type(exc).__name__}).")
 
 
 if __name__ == "__main__":

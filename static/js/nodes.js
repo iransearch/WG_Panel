@@ -408,13 +408,13 @@
     setKeyVisibility(false);
   }
 
-  async function copyText(value) {
+  async function copyText(value, label = 'Endpoint') {
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      notify('Endpoint copied.', 'success');
+      notify(label + ' copied.', 'success');
     } catch (_) {
-      notify('Could not copy endpoint.', 'error');
+      notify('Could not copy ' + label.toLowerCase() + '.', 'error');
     }
   }
 
@@ -606,6 +606,7 @@
     }
 
     function renderJobs(jobs) {
+      const expanded = new Set($$('.nodes-provision-diagnostics[open]', jobList).map((details) => details.dataset.jobId));
       jobPanel.hidden = !jobs.length;
       const rows = jobs.map((job) => {
         const row = document.createElement('li');
@@ -614,7 +615,7 @@
         const name = document.createElement('strong');
         name.textContent = job.settings.name;
         const detail = document.createElement('p');
-        detail.textContent = `${job.settings.domain} · ${job.message}`;
+        detail.textContent = [job.settings.domain, job.status === 'failed' ? job.stage : null, job.message].filter(Boolean).join(' · ');
         description.append(name, detail);
 
         const actions = document.createElement('div');
@@ -633,6 +634,32 @@
           actions.append(retry);
         }
         row.append(description, actions);
+        if (job.status === 'failed' && job.diagnostics && Object.keys(job.diagnostics).length) {
+          const { step, exit_code: exitCode, output } = job.diagnostics;
+          const details = document.createElement('details');
+          details.className = 'nodes-provision-diagnostics';
+          details.dataset.jobId = job.id;
+          details.open = expanded.has(job.id);
+
+          const summary = document.createElement('summary');
+          summary.textContent = 'Error details';
+          const log = document.createElement('pre');
+          log.textContent = [
+            'Stage: ' + job.stage,
+            step ? 'Step: ' + step : '',
+            Number.isInteger(exitCode) ? 'Exit code: ' + exitCode : '',
+            job.message,
+            ...(output || []),
+          ].filter(Boolean).join('\n');
+
+          const copy = document.createElement('button');
+          copy.type = 'button';
+          copy.className = 'nodes-btn nodes-btn--quiet';
+          copy.textContent = 'Copy error';
+          copy.addEventListener('click', () => copyText(log.textContent, 'Setup error'));
+          details.append(summary, log, copy);
+          row.append(details);
+        }
         return row;
       });
       jobList.replaceChildren(...rows);

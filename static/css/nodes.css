@@ -270,6 +270,14 @@ body.dark .nodes-confirm {
 .nodes-provision-job p { margin: 3px 0 0; color: var(--n-muted); overflow-wrap: anywhere; }
 .nodes-provision-job strong { overflow-wrap: anywhere; }
 .nodes-provision-job__actions { display: flex; align-items: center; gap: 8px; }
+.nodes-provision-diagnostics { grid-column: 1 / -1; min-width: 0; }
+.nodes-provision-diagnostics summary { width: fit-content; cursor: pointer; color: var(--n-text); }
+.nodes-provision-diagnostics pre {
+  max-height: 260px; overflow: auto; margin: 8px 0;
+  padding: 10px; border: 1px solid var(--n-line); border-radius: 8px;
+  background: var(--n-surface-2); color: var(--n-text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .nodes-provision-status { font-weight: 700; }
 .nodes-provision-status[data-status="done"] { color: var(--n-green); }
 .nodes-provision-status[data-status="failed"], .nodes-provision-error { color: var(--n-red); }

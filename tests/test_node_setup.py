@@ -43,7 +43,7 @@ def test_custom_interface_name_and_private_cidr_reach_the_installer(monkeypatch)
     })
     commands = []
 
-    def run(client, argv, *, password=None, on_line=None, timeout=25):
+    def run(client, argv, *, password=None, on_line=None, on_stderr=None, timeout=25):
         commands.append(argv)
         on_line(b"0" if argv == ["id", "-u"] else b"WG_API_KEY:" + b"A" * 24)
         return 0
@@ -60,6 +60,71 @@ def test_custom_interface_name_and_private_cidr_reach_the_installer(monkeypatch)
     ]:
         with pytest.raises(node_setup.SetupError):
             node_setup.parse_settings({**config, "password": password, **fields})
+
+
+def test_ssh_reader_captures_split_stdout_stderr_and_bounds_lines():
+    stdout_chunks = [b"WG_STAGE:depend", b"encies\n", b"x" * 8193, b"overflow suffix\nlast stdout"]
+    stderr_chunks = [b"E: Could not", b" resolve mirror\nlast stderr"]
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.recv_ready.side_effect = lambda: bool(stdout_chunks)
+    session.recv.side_effect = lambda _: stdout_chunks.pop(0)
+    session.recv_stderr_ready.side_effect = lambda: bool(stderr_chunks)
+    session.recv_stderr.side_effect = lambda _: stderr_chunks.pop(0)
+    session.exit_status_ready.return_value = True
+    session.recv_exit_status.return_value = 100
+    client = MagicMock()
+    client.get_transport.return_value.open_session.return_value = session
+    stdout, stderr = [], []
+
+    code = node_setup._ssh_run(client, ["apt-get", "update"], on_line=stdout.append,
+                               on_stderr=stderr.append)
+    assert code == 100
+    assert stdout == [b"WG_STAGE:dependencies", b"[installer line exceeded 8 KiB]", b"last stdout"]
+    assert stderr == [b"E: Could not resolve mirror", b"last stderr"]
+
+
+def test_failed_setup_persists_redacted_command_and_original_error(tmp_path, monkeypatch):
+    from io import StringIO
+
+    config, password = settings()
+    api_key = "AB" * 12
+    path = tmp_path / "job.json"
+    node_setup._write_state(path, {"settings": config, "status": "pending", "stage": "queued"})
+    monkeypatch.setattr("sys.stdin", StringIO(password))
+    monkeypatch.setattr(node_setup, "_check_dns", Mock())
+    monkeypatch.setattr(node_setup, "_connect_ssh", Mock(return_value=MockSSH()))
+
+    def run(client, argv, *, password=None, on_line=None, on_stderr=None, timeout=25):
+        if argv == ["id", "-u"]:
+            on_line(b"0")
+            return 0
+        on_line(b"WG_STAGE:dependencies")
+        on_line(b"WG_STEP:apt-get update")
+        for _ in range(40):
+            on_line(b"Old progress message")
+        on_line(f"Installer read {api_key}".encode())
+        on_line(b"WG_API_KEY:" + api_key.encode())
+        on_stderr(b"\x1b[31mE: Could not resolve mirror.example.test\x1b[0m")
+        on_stderr(f"Retrying with {settings()[1]}".encode())
+        on_stderr(b"Authorization: Bearer header-key")
+        on_stderr(b"https://build:private-pass@mirror.example.test/path?access_token=private-token")
+        return 100
+
+    monkeypatch.setattr(node_setup, "_ssh_run", run)
+    node_setup._run_job(path)
+    serialized = path.read_text()
+    job = json.loads(serialized)
+    assert job["stage"] == "dependencies"
+    assert job["status"] == "failed"
+    assert job["message"] == "The installer exited with code 100."
+    details = job["diagnostics"]
+    assert details["step"] == "apt-get update"
+    assert details["exit_code"] == 100
+    assert "E: Could not resolve mirror.example.test" in details["output"]
+    assert len(details["output"]) == 32
+    for secret in (password, api_key, "header-key", "private-pass", "private-token"):
+        assert secret not in serialized
 
 
 def test_health_checks_the_requested_interface_and_address(monkeypatch):
@@ -82,8 +147,9 @@ def test_health_checks_the_requested_interface_and_address(monkeypatch):
     with pytest.raises(node_setup.SetupError, match="wg1"):
         node_setup._verify_node(config, "A" * 24)
     health("wg1", "10.10.10.1/24")
-    with pytest.raises(node_setup.SetupError, match="wg1"):
+    with pytest.raises(node_setup.SetupError, match="wg1") as failure:
         node_setup._verify_node(config, "A" * 24)
+    assert "reported address 10.10.10.1/24" in failure.value.diagnostics["output"][0]
     health("wg1", "172.24.3.1/16")
     node_setup._verify_node(config, "A" * 24)
 

@@ -33,11 +33,33 @@ def step(name):
     print(f"WG_STAGE:{name}", flush=True)
 
 
+def command_step(label):
+    print(f"WG_STEP:{label}", flush=True)
+
+
+def unit_errors(unit):
+    try:
+        subprocess.run(
+            ["journalctl", "-u", unit, "-n", "16", "--no-pager", "-o", "cat"],
+            stdin=subprocess.DEVNULL, check=False, timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def run(*argv, capture=False, timeout=300):
+    command_step(shlex.join(argv))
     env = dict(os.environ, DEBIAN_FRONTEND="noninteractive", NEEDRESTART_MODE="a")
-    return subprocess.run(argv, stdin=subprocess.DEVNULL, check=True, env=env,
-                          text=True, stdout=subprocess.PIPE if capture else None,
-                          timeout=timeout).stdout
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, check=True, env=env,
+                              text=True, stdout=subprocess.PIPE if capture else None,
+                              timeout=timeout).stdout
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        if argv[0] == "systemctl" and (
+            argv[-1] in {SERVICE, "certbot.timer"} or argv[-1].startswith("awg-quick@")
+        ):
+            unit_errors(argv[-1])
+        raise
 
 
 def check_port(port, *, udp=False):
@@ -99,6 +121,7 @@ def provision(domain, email, api_port, awg_port, address,
     if not (cert.is_file() and key.is_file()) and not check_port(80):
         stop("port80")
 
+    command_step("Install AmneziaWG tools and runtime")
     if not node._wireguard_installed(ROOT):
         raise SystemExit(1)
     venv = AGENT / "venv"
@@ -107,6 +130,7 @@ def provision(domain, email, api_port, awg_port, address,
     run(str(venv / "bin/python"), "-m", "pip", "install", "-r",
         str(AGENT / "requirements.txt"), timeout=600)
 
+    command_step("Save node setup settings")
     node._write(STATE, json.dumps(settings))
     step("interface")
     if not conf.exists():
@@ -118,9 +142,11 @@ def provision(domain, email, api_port, awg_port, address,
         ):
             stop("network")
         private_key, _ = node.gen_keypair()
+        command_step(f"Write {interface_name}.conf")
         node._write(conf, node._wg_conf(str(interface_address), str(awg_port), private_key, node._default_iface(), root=ROOT))
     run("systemctl", "enable", "--now", awg_service)
     if not active(awg_service):
+        unit_errors(awg_service)
         raise SystemExit(1)
 
     step("certificate")
@@ -134,6 +160,7 @@ def provision(domain, email, api_port, awg_port, address,
         stop("certificate")
 
     step("service")
+    command_step("Write node agent configuration and systemd unit")
     old_env = node._env(env.read_text()) if env.exists() else {}
     api_key = old_env.get("API_KEY") or secrets.token_urlsafe(18)
     bind = "[::]" if ipaddress.ip_address(address).version == 6 else "0.0.0.0"
@@ -150,7 +177,9 @@ def provision(domain, email, api_port, awg_port, address,
         run("systemctl", "restart", SERVICE)
     run("systemctl", "enable", "--now", SERVICE)
     if not active(SERVICE):
+        unit_errors(SERVICE)
         raise SystemExit(1)
+    command_step("Install certificate renewal hook")
     node._write(hook, f'#!/bin/sh\n[ "$RENEWED_LINEAGE" = {shlex.quote(str(lineage))} ] || exit 0\n'
                       f'exec systemctl try-restart {SERVICE}\n')
     hook.chmod(0o755)
