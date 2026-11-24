@@ -383,6 +383,10 @@ def _interface_schema():
         statements.append(
             'ALTER TABLE interface_config ADD COLUMN public_key VARCHAR(128)'
         )
+    if 'client_dns_override' not in cols:
+        statements.append(
+            'ALTER TABLE interface_config ADD COLUMN IF NOT EXISTS client_dns_override JSON'
+        )
 
     if statements:
         with db.engine.begin() as conn:
@@ -396,10 +400,16 @@ db.init_app(app)
 
 register_profile_routes(app)
 
+def _iface_client_dns(iface, agent_dns):
+    # The node can report server DNS independently of its export policy.
+    override = getattr(iface, 'client_dns_override', None)
+    return override['dns'] if override else agent_dns
+
+
 def _effective_dns(peer):
     if peer.dns:
         return peer.dns
-    iface_dns = getattr(peer.iface, 'dns', None)
+    iface_dns = _iface_client_dns(peer.iface, getattr(peer.iface, 'dns', None))
     # NULL inherits the profile. An empty string explicitly omits DNS.
     return _panel_default_dns() if iface_dns is None else iface_dns
 
@@ -14116,11 +14126,10 @@ def _client_conf_txt(peer: Peer) -> str:
     if not awg_lines:
         raise ClientConfigIncomplete('awg_parameters_unavailable')
 
-    dns_val = ""
     try:
-        dns_val = _effective_dns(peer) or ""
+        dns_val = _effective_dns(peer)
     except Exception:
-        dns_val = (peer.dns or (iface.dns if iface is not None else "") or "")
+        dns_val = ''
 
     ep = _effective_client_endpoint(peer)
 
@@ -16112,6 +16121,7 @@ def node_ifaces(nid):
         override = fields['endpoint_override']
         item.update({
             **fields,
+            'client_dns': _iface_client_dns(mirror, item.get('dns')),
             'auto_endpoint': '',
             'effective_endpoint': override,
             'endpoint_source': 'override' if override else 'none',
@@ -16430,6 +16440,21 @@ def node_iface_delete(nid, name):
         subscription_link_count=subscription_link_count
     )
 
+def _parse_interface_dns(value):
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value.splitlines()) > 1
+        or any(char in value for char in '\r\n\x00#')
+    ):
+        raise ValueError('DNS must be a single line of comma-separated values.')
+    dns = ', '.join(part.strip() for part in value.replace('،', ',').split(',') if part.strip())
+    if len(dns) > 128:
+        raise ValueError('DNS must be at most 128 characters.')
+    return dns
+
+
 @app.route('/api/iface/<int:iid>', methods=['GET', 'POST'])
 @require_api_key_or_login
 def iface_settings(iid):
@@ -16505,18 +16530,7 @@ def iface_settings(iid):
         updates = {}
 
         if 'dns' in data:
-            dns_value = data['dns']
-            if dns_value is not None and (
-                not isinstance(dns_value, str)
-                or len(dns_value.splitlines()) > 1
-                or any(char in dns_value for char in '\r\n\x00#')
-            ):
-                raise ValueError('DNS must be a single line of comma-separated values.')
-            dns = (dns_value or '').strip().replace('،', ',')
-            dns = ', '.join(part.strip() for part in dns.split(',') if part.strip())
-            if len(dns) > 128:
-                raise ValueError('DNS must be at most 128 characters.')
-            updates['dns'] = None if dns_value is None else dns
+            updates['dns'] = _parse_interface_dns(data['dns'])
 
         if 'mtu' in data:
             updates['mtu'] = optional_int(
@@ -16920,7 +16934,7 @@ class NodeIfaceLookupError(Exception):
         self.detail = detail
 
 
-def _node_mirror_for_endpoint_default(node, name):
+def _node_mirror_for_settings(node, name):
 
     db_name = f'n{node.id}:{name}'
     iface = InterfaceConfig.query.filter_by(name=db_name).first()
@@ -16957,6 +16971,33 @@ def _node_mirror_for_endpoint_default(node, name):
     db.session.commit()
 
     return iface, remote
+
+
+@app.put('/api/nodes/<int:nid>/iface/<name>/client-dns')
+@admin_required
+def api_node_iface_client_dns(nid, name):
+    csrf.protect()
+    if not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', name) or name in {'.', '..'}:
+        return jsonify(error='invalid_iface', detail='Invalid interface name.'), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or 'dns' not in data:
+        return jsonify(error='invalid_payload', detail='Send a DNS value or null.'), 400
+    try:
+        dns = _parse_interface_dns(data['dns'])
+    except ValueError as exc:
+        return jsonify(error='invalid_interface_setting', detail=str(exc)), 400
+
+    node = db.session.get(Node, nid)
+    if node is None:
+        return jsonify(error='node_not_found', detail='Node was not found.'), 404
+    try:
+        iface, _ = _node_mirror_for_settings(node, name)
+    except NodeIfaceLookupError as exc:
+        return jsonify(error=exc.code, detail=exc.detail), exc.status
+
+    iface.client_dns_override = {'dns': dns}
+    db.session.commit()
+    return jsonify(ok=True, dns=dns)
 
 
 @app.get('/api/nodes/<int:nid>/iface/<name>/endpoint-default')
@@ -17021,7 +17062,7 @@ def api_node_iface_endpoint_default_put(nid, name):
         return jsonify(ok=False, error=exc.code, detail=exc.detail), 400
 
     try:
-        iface, remote = _node_mirror_for_endpoint_default(node, name)
+        iface, remote = _node_mirror_for_settings(node, name)
     except NodeIfaceLookupError as exc:
         return jsonify(ok=False, error=exc.code, detail=exc.detail), exc.status
 
@@ -17174,7 +17215,7 @@ def api_node_iface_endpoint_default_apply(nid, name):
             )
     else:
         try:
-            iface, remote = _node_mirror_for_endpoint_default(node, name)
+            iface, remote = _node_mirror_for_settings(node, name)
         except NodeIfaceLookupError as exc:
             return jsonify(ok=False, error=exc.code, detail=exc.detail), exc.status
 

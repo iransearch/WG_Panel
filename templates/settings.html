@@ -1781,7 +1781,7 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
                     aria-describedby="i-dns-help"
                   />
                   <small id="i-dns-help">Separate DNS servers with commas. Leave empty and uncheck below to omit DNS for peers without their own DNS.</small>
-                  <label id="i-dns-default-option" for="i-dns-default">
+                  <label for="i-dns-default">
                     <input type="checkbox" id="i-dns-default" />
                     Use panel DNS when empty
                   </label>
@@ -3143,7 +3143,7 @@ set use_fa_brands = true %} {% endblock %} {% block head_extras %}
     </script>
     <script
       defer
-      src="{{ url_for('static', filename='js/settings.js', v='interface-dns-2') }}"
+      src="{{ url_for('static', filename='js/settings.js', v='node-client-dns-1') }}"
     ></script>
     <script
       defer

@@ -454,18 +454,105 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertIsNone(self.client.get(path, headers=self.headers).json['dns'])
             self.assertEqual(exported_dns(), ['1.0.0.1'])
 
+    def test_node_client_dns_controls_exports_independently_from_agent_dns(self):
+        node = Node(name='DNS node', base_url='https://node.example.test', api_key='node')
+        admin = AdminAccount(username='node-dns-admin', password_hash='unused')
+        db.session.add_all((node, admin))
+        db.session.commit()
+        base = f'/api/nodes/{node.id}'
+        path = base + '/iface/awg0/client-dns'
+        key = b64encode(b'a' * 32).decode()
+        remote = {
+            'name': 'awg0', 'address': '10.61.0.1/24', 'listen_port': 51820,
+            'dns': '8.8.8.8', 'public_key': key,
+        }
+
+        def node_get(target, url, **kwargs):
+            if url == '/api/interfaces':
+                return {'interfaces': [remote], 'public_ipv4': '192.0.2.1'}
+            if url == '/api/iface/awg0/available_ips':
+                return {'available_ips': []}
+            if url == '/api/iface/awg0/awg-parameters':
+                return {'parameters': {'Jc': '4'}}
+            self.fail(f'Unexpected Agent request {url}')
+
+        with self.panel.app.app_context():
+            self.assertEqual(self.client.put(path, json={'dns': ''}).status_code, 401)
+        with self.client.session_transaction() as session:
+            session['_user_id'] = str(admin.id)
+            session['_fresh'] = True
+        self.assertEqual(self.client.put(path, json={'dns': ''}).status_code, 400)
+
+        with (
+            patch.object(self.panel, 'node_get', side_effect=node_get) as read_node,
+            patch.object(self.panel, 'node_post') as write_node,
+            patch.object(self.panel, '_node_endpoint_fallback', return_value='node.example.test:51820'),
+            patch.object(self.panel, '_panel_default_dns', return_value='1.0.0.1'),
+            patch.object(self.panel.csrf, 'protect'),
+        ):
+            invalid = self.client.put(path, json={'dns': '9.9.9.9\nMTU = 576'})
+            self.assertEqual(invalid.status_code, 400)
+            read_node.assert_not_called()
+
+            clear = self.client.put(path, json={'dns': ''})
+            self.assertEqual(clear.status_code, 200, clear.json)
+            mirror = InterfaceConfig.query.filter_by(node_id=node.id).one()
+            self.assertEqual(mirror.dns, '8.8.8.8')
+
+            # Subsequent inventory metadata may still contain a server-side DNS.
+            remote['dns'] = '8.8.4.4'
+            self.panel.ensure_node_mirror_iface(node, 'awg0', remote)
+            self.assertEqual(mirror.dns, '8.8.4.4')
+            peer = Peer(
+                name='Node DNS test', iface=mirror, public_key=key, private_key=key,
+                address='10.61.0.2/32', status='online',
+            )
+            sub = Subscription(name='Node DNS test', token='node-dns-test')
+            link = SubscriptionPeer(subscription=sub, peer=peer)
+            db.session.add(link)
+            db.session.commit()
+
+            def exported_dns():
+                response = self.client.get('/s/node-dns-test/links')
+                self.assertEqual(response.status_code, 200, response.json)
+                return parse_qs(urlsplit(response.get_data(as_text=True).strip()).query).get('dns')
+
+            def save(value):
+                read_node.reset_mock()
+                response = self.client.put(path, json={'dns': value})
+                self.assertEqual(response.status_code, 200, response.json)
+                read_node.assert_not_called()
+                return response.json['dns']
+
+            [interface] = self.client.get(base + '/interfaces').json['interfaces']
+            self.assertEqual((interface['dns'], interface['client_dns']), ('8.8.4.4', ''))
+            self.assertIsNone(exported_dns())
+            config = self.client.get(f'/s/node-dns-test/inbound/{link.id}/config')
+            self.assertEqual(config.status_code, 200)
+            self.assertNotIn(b'DNS = ', config.data)
+
+            self.assertIsNone(save(None))
+            self.assertEqual(exported_dns(), ['1.0.0.1'])
+            self.assertEqual(save('9.9.9.9، 149.112.112.112'), '9.9.9.9, 149.112.112.112')
+            self.assertEqual(exported_dns(), ['9.9.9.9, 149.112.112.112'])
+            peer.dns = '4.2.2.2'
+            db.session.commit()
+            self.assertEqual(exported_dns(), ['4.2.2.2'])
+            write_node.assert_not_called()
+
     def test_interface_schema_keeps_existing_client_endpoints(self):
         local, _ = self.add_irspeedy_interfaces()
         iface_id = local.id
         db.session.remove()
         with db.engine.begin() as connection:
-            connection.execute(text('ALTER TABLE interface_config DROP COLUMN endpoint_alternates'))
+            connection.execute(text('ALTER TABLE interface_config DROP COLUMN endpoint_alternates, DROP COLUMN client_dns_override'))
         self.panel._interface_schema()
         self.panel._interface_schema()
 
         iface = db.session.get(InterfaceConfig, iface_id)
         self.assertEqual((iface.endpoint_host, iface.endpoint_port), ('wg0.example.test', 51820))
         self.assertIsNone(iface.endpoint_alternates)
+        self.assertIsNone(iface.client_dns_override)
 
     def test_client_endpoint_pairs_expand_the_feed_for_local_and_node_peers(self):
         local, pinned = self.add_irspeedy_interfaces()

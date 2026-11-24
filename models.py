@@ -22,6 +22,7 @@ class InterfaceConfig(db.Model):
     public_key  = db.Column(db.String(128))
     mtu         = db.Column(db.Integer)
     dns         = db.Column(db.String(128))
+    client_dns_override = db.Column(db.JSON)
     post_up     = db.Column(db.Text)
     post_down   = db.Column(db.Text)
     peers       = db.relationship('Peer', backref='iface', lazy=True)
