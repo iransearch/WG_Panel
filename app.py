@@ -8,7 +8,7 @@ from itertools import islice
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta, timezone
 from flask import (
-    Flask, render_template, redirect, url_for, flash, request,
+    Config as FlaskConfig, Flask, has_request_context, render_template, redirect, url_for, flash, request,
     jsonify, abort, current_app, make_response, send_file, session, g
 )
 
@@ -30,7 +30,7 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 from config import Config
 from panel_core.database import bundle_database
 from agent.awg_config import (
-    PEER_REMOVAL_BATCH, activate_created_interface, new_interface_lines, parameter_lines,
+    PEER_REMOVAL_BATCH, activate_created_interface, config_without_peers, new_interface_lines, parameter_lines,
     read_parameters, remove_interface_peers,
     remove_peer_blackholes,
 )
@@ -54,6 +54,7 @@ from panel_core.security import hash_recovery, verify_recovery, generate_recover
 from panel_core.profiles import register_profile_routes, panel_default_dns as _panel_default_dns
 from panel_core.subscription_policy import compute_subscription_access, effective_peer_state
 from panel_core.irspeedy_feed import share_uris as _irspeedy_share_uris
+from panel_core.irspeedy_queue import ProvisioningBusy, ProvisioningClient, provisioning_process, serve_provisioning
 from panel_core import node_client as _node_client
 from panel_core.health_center import build_health_center
 from panel_operations.peer_diagnostics import diagnose_peer
@@ -118,7 +119,25 @@ _PANEL_UPDATE_CACHE = {
     "data": None,
 }
 
-app = Flask(__name__)
+class PanelConfig(FlaskConfig):
+    def __getitem__(self, key):
+        if key in {"SESSION_COOKIE_SECURE", "REMEMBER_COOKIE_SECURE"} and has_request_context():
+            return _is_https()
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+class PanelApp(Flask):
+    config_class = PanelConfig
+
+
+_PROVISIONING_WORKER = __name__ == "__main__" and sys.argv[1:2] == ["--irspeedy-provisioning"]
+app = PanelApp(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 
@@ -515,10 +534,6 @@ def inject_panel_timezone():
 #--------------------------
 # Allow Plain Http
 #_________________________
-@app.before_request
-def _dev_cookie():
-    current_app.config['SESSION_COOKIE_SECURE'] = bool(_is_https())
-
 @app.after_request
 def _log_request(resp):
     try:
@@ -4137,7 +4152,8 @@ def http_security_temporary_allow_remove():
     return jsonify(ok=True, network=network, temporary_allow=_http_security_temp_allows_locked(_json_load(_HTTP_4XX_STATE_FILE, {})))
 
 
-_start_http_security_cleanup()
+if not _PROVISIONING_WORKER:
+    _start_http_security_cleanup()
 
 # ==================================================
 # Node and WG interface notification monitor
@@ -10768,6 +10784,7 @@ def _wg_enable(peer):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=12,
         check=False,
     )
 
@@ -12590,82 +12607,45 @@ def _write_conf_atomic(conf_path: str, text_body: str, *, create_only=False):
                 pass
 
 
-def _peer_to_conf(peer: Peer):
-    conf_path = getattr(peer.iface, 'path', None)
-    if not conf_path:
-        raise RuntimeError('The interface has no configuration file path.')
-
-    if _peer_in_conf(conf_path, peer.public_key):
-        return
-
-    block_lines = [
-        '[Peer]',
-        f'PublicKey = {peer.public_key}',
-        f'AllowedIPs = {_host_peer(peer)}',
-    ]
-
-    fixed_endpoint = (getattr(peer, 'peer_endpoint', None) or '').strip()
-    if fixed_endpoint:
-        block_lines.append(f'Endpoint = {fixed_endpoint}')
-    if peer.persistent_keepalive:
-        block_lines.append(f'PersistentKeepalive = {peer.persistent_keepalive}')
-
-    block_txt = '\n'.join(block_lines) + '\n'
-
-    existing = ''
-    if os.path.isfile(conf_path):
-        with open(conf_path, 'r', encoding='utf-8', errors='ignore') as f:
-            existing = f.read()
-
-    existing = (existing or '').replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
-    combined = block_txt if existing.strip() == '' else existing + '\n\n' + block_txt
-
-    _write_conf_atomic(conf_path, _norm_conftext(combined))
-
-    if not _peer_in_conf(conf_path, peer.public_key):
-        raise RuntimeError(f'Peer block was not persisted to {conf_path}.')
-
-
 def _remove_peer(peer: Peer):
-
     conf_path = getattr(peer.iface, 'path', None)
-    if not conf_path:
-        return
-    if not os.path.isfile(conf_path):
+    if not conf_path or not os.path.isfile(conf_path):
         return
 
-    with open(conf_path, 'r', encoding='utf-8', errors='ignore') as f:
-        lines = f.readlines()
-
-    out_lines, i = [], 0
-    while i < len(lines):
-        line = lines[i]
-        if line.strip().lower() == '[peer]':
-            block = [line]
-            i += 1
-            while i < len(lines) and not lines[i].strip().startswith('['):
-                block.append(lines[i]); i += 1
-
-            has_pk = any(
-                l.strip().lower().startswith('publickey')
-                and '=' in l
-                and l.split('=', 1)[1].strip() == peer.public_key
-                for l in block
-            )
-            if not has_pk:
-                out_lines.extend(block)
-        else:
-            out_lines.append(line); i += 1
-
-    _write_conf_atomic(conf_path, _norm_conftext(''.join(out_lines)))
+    with open(conf_path, 'r', encoding='utf-8', errors='ignore') as handle:
+        existing = handle.read()
+    revised = config_without_peers(existing, {peer.public_key})
+    if revised != existing:
+        _write_conf_atomic(conf_path, _norm_conftext(revised))
 
     if _peer_in_conf(conf_path, peer.public_key):
         raise RuntimeError(f'Peer block is still present in {conf_path}.')
 
 
 def _sync_peer(peer: Peer):
-    _remove_peer(peer)
-    _peer_to_conf(peer)
+    conf_path = getattr(peer.iface, 'path', None)
+    if not conf_path:
+        raise RuntimeError('The interface has no configuration file path.')
+
+    existing = ''
+    if os.path.isfile(conf_path):
+        with open(conf_path, 'r', encoding='utf-8', errors='ignore') as handle:
+            existing = handle.read()
+
+    block = [
+        '[Peer]',
+        f'PublicKey = {peer.public_key}',
+        f'AllowedIPs = {_host_peer(peer)}',
+    ]
+    fixed_endpoint = (getattr(peer, 'peer_endpoint', None) or '').strip()
+    if fixed_endpoint:
+        block.append(f'Endpoint = {fixed_endpoint}')
+    if peer.persistent_keepalive:
+        block.append(f'PersistentKeepalive = {peer.persistent_keepalive}')
+
+    retained = config_without_peers(existing, {peer.public_key}).rstrip('\n')
+    updated = _norm_conftext(retained + '\n\n' + '\n'.join(block))
+    _write_conf_atomic(conf_path, updated)
 
 
 def _wg_disable_quiet(peer: Peer):
@@ -13266,19 +13246,6 @@ def _is_https(req=None) -> bool:
         pass
     return False
 
-
-@app.before_request
-def _cookie_scheme():
-    """
-    Force cookie flags to match the *current request* scheme.
-    This prevents Secure cookies being set on HTTP responses.
-    """
-    secure_now = _is_https()
-    current_app.config.update(
-        SESSION_COOKIE_SECURE=secure_now,
-        REMEMBER_COOKIE_SECURE=secure_now,
-    )
-    current_app.config["PREFERRED_URL_SCHEME"] = "https" if secure_now else "http"
 
 def _save_panel_settings(j: dict):
     os.makedirs(app.instance_path, exist_ok=True)
@@ -28981,6 +28948,27 @@ def api_irspeedy_subscriptions():
     ):
         return jsonify(error='local_interface_required'), 400
 
+    queue = current_app.config.get('IRSPEEDY_PROVISIONING_QUEUE')
+    if queue is None:
+        return _provision_irspeedy_subscription(provision_token, data, targets)
+
+    try:
+        status, payload = queue.submit(provision_token, {**data, 'targets': targets}, request.url_root)
+    except ProvisioningBusy:
+        status, payload = 503, {'error': 'provisioning_busy'}
+    response = jsonify(payload)
+    if status == 503:
+        response.headers['Retry-After'] = '2'
+    return response, status
+
+
+def _run_irspeedy_job(provision_token, data, url_root):
+    with app.test_request_context('/api/irspeedy/subscriptions', base_url=url_root, method='POST'):
+        response = app.make_response(_provision_irspeedy_subscription(provision_token, data, data['targets']))
+        return response.status_code, response.get_json()
+
+
+def _provision_irspeedy_subscription(provision_token, data, targets):
     all_targets = targets == 'all'
     if not all_targets:
         existing = Subscription.query.filter_by(token=provision_token).first()
@@ -30777,11 +30765,12 @@ def subscription_public_inbound_geo(token, link_id):
         public_host=host
     )
 
-_start_retention()
-if __name__ != '__main__':
-    _start_expiry_enforcer()
-_start_backup_scheduler()
-_node_notify_monitor()
+if not _PROVISIONING_WORKER:
+    _start_retention()
+    if __name__ != '__main__':
+        _start_expiry_enforcer()
+    _start_backup_scheduler()
+    _node_notify_monitor()
 # ========================================
 # Traffic Control / WG forwarding policy
 # ========================================
@@ -32546,6 +32535,9 @@ from panel_operations.profile import profile_bp
 app.register_blueprint(profile_bp)
 
 if __name__ == "__main__":
+    if _PROVISIONING_WORKER:
+        serve_provisioning(sys.argv[2], _run_irspeedy_job, app.logger)
+        sys.exit(0)
 
     import multiprocessing, ssl
 
@@ -32683,7 +32675,7 @@ if __name__ == "__main__":
 
     cpu_based_default_workers = multiprocessing.cpu_count() * 2 + 1
     workers          = _env_int("WORKERS", cpu_based_default_workers)
-    threads          = _env_int("THREADS", 4)
+    threads          = max(8, _env_int("THREADS", 8))
     timeout          = _env_int("TIMEOUT", 60)
     graceful_timeout = _env_int("GRACEFUL_TIMEOUT", 30)
     loglevel         = (os.getenv("LOGLEVEL") or "info").lower()
@@ -32703,14 +32695,15 @@ if __name__ == "__main__":
     app.logger.info("Panel started (TLS=%s, bind=%s)", "on" if tls_enabled else "off", bind)
     from importlib.metadata import version as _package_version
     app.logger.info(
-        "Gunicorn runtime: version=%s worker=sync workers=%s timeout=%ss",
-        _package_version("gunicorn"), workers, timeout,
+        "Gunicorn runtime: version=%s worker=gthread workers=%s threads=%s timeout=%ss",
+        _package_version("gunicorn"), workers, threads, timeout,
     )
 
     options = {
         "bind": bind,
         "workers": workers,
-        "worker_class": "sync",
+        "worker_class": "gthread",
+        "threads": threads,
         "timeout": timeout,
         "graceful_timeout": graceful_timeout,
         "accesslog": "-",
@@ -32751,10 +32744,17 @@ if __name__ == "__main__":
         engine.dispose(close=False)
 
     options["post_fork"] = reset_database_pool
-    def start_expiry_worker(worker):
-        _start_expiry_enforcer()
 
-    options['post_worker_init'] = start_expiry_worker
-    _Guni(app, options).run()
+    command = [sys.executable, os.path.abspath(__file__), "--irspeedy-provisioning"]
+    with provisioning_process(command, app.logger, grace_period=max(1, graceful_timeout)) as queue_path:
+        def initialize_web_worker(worker):
+            # Keep one request thread available for traffic outside the provisioning queue.
+            app.config['IRSPEEDY_PROVISIONING_QUEUE'] = ProvisioningClient(
+                queue_path, slots=threads - 1, timeout=timeout if timeout > 0 else 60,
+            )
+            _start_expiry_enforcer()
+
+        options['post_worker_init'] = initialize_web_worker
+        _Guni(app, options).run()
 
 

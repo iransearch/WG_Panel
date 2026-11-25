@@ -840,6 +840,47 @@ class SubscriptionPerformanceTests(unittest.TestCase):
             self.assertEqual([link.netloc for link in read_feed()],
                              ['auto.example.test:51820'] + node_endpoints + ['pinned.example.test:918'])
 
+    def test_irspeedy_queue_preserves_url_status_and_retry_contract(self):
+        headers = {**self.headers, 'Idempotency-Key': 'a' * 64}
+        data = {'targets': 'all', 'name': 'Queued'}
+        queue = SimpleNamespace(submit=self.panel._run_irspeedy_job)
+        with patch.dict(self.panel.app.config, {'IRSPEEDY_PROVISIONING_QUEUE': queue}), patch.object(
+            self.panel, '_provision_irspeedy_subscription',
+            side_effect=lambda *_: self.panel._irspeedy_subscription_response(
+                SimpleNamespace(id=1, token='a' * 64, links=[]), 201,
+            ),
+        ) as provision:
+            response = self.client.post(
+                '/api/irspeedy/subscriptions', headers=headers, json=data,
+                base_url='https://panel.example.test:8443/',
+            )
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json['subscription']['feed_url'],
+                             'https://panel.example.test:8443/s/' + 'a' * 64 + '/links')
+            provision.assert_called_once_with('a' * 64, data, 'all')
+            queue.submit = lambda *_: (503, {'error': 'provisioning_busy'})
+            response = self.client.post('/api/irspeedy/subscriptions', headers=headers, json=data)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.headers['Retry-After'], '2')
+
+    def test_peer_upsert_replaces_config_once(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'awg.conf'
+            path.write_text('[Interface]\nAddress = 10.0.0.1/24\n\n'
+                            '[Peer]\nPublicKey = old\nAllowedIPs = 10.0.0.2/32\n\n'
+                            '[Peer]\nPublicKey = keep\nAllowedIPs = 10.0.0.3/32\n')
+            peer = SimpleNamespace(iface=SimpleNamespace(path=str(path)),
+                                   public_key='old', persistent_keepalive=25)
+            with patch.object(self.panel, '_host_peer', return_value='10.0.0.5/32'), patch.object(
+                self.panel, '_write_conf_atomic', wraps=self.panel._write_conf_atomic,
+            ) as write:
+                self.panel._sync_peer(peer)
+            self.assertEqual(write.call_count, 1)
+            updated = path.read_text()
+            self.assertEqual(updated.count('PublicKey = old'), 1)
+            self.assertIn('PublicKey = keep\nAllowedIPs = 10.0.0.3/32', updated)
+            self.assertIn('PublicKey = old\nAllowedIPs = 10.0.0.5/32\nPersistentKeepalive = 25', updated)
+
     def test_irspeedy_provisions_two_peers_with_one_subscription_and_feed(self):
         wg0, wg1 = self.add_irspeedy_interfaces()
         headers = {**self.headers, 'Idempotency-Key': 'a' * 64}

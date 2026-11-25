@@ -462,6 +462,10 @@ node
    </details>
 </div>
 
+## IRSPEEDY provisioning
+
+The Gunicorn launcher starts a separate provisioning process for `POST /api/irspeedy/subscriptions`. It executes one job at a time and keeps a request thread per web worker available outside the provisioning queue. The endpoint returns its usual `201` or `200` after completion. If it returns `503 provisioning_busy`, retry after the `Retry-After` interval with the same `Idempotency-Key`.
+
 ## PostgreSQL setup and upgrades
 
 PostgreSQL is required. In the Debian/Ubuntu installer, leave DATABASE_URL empty during .env setup to provision a local PostgreSQL database on port 5432. Enter a PostgreSQL URL to use an existing database. For manual and Docker installs, set DATABASE_URL to `postgresql+psycopg://USER:PASSWORD@HOST:5432/DBNAME`. URL-encode reserved characters in credentials. Install a PostgreSQL client compatible with the database server for backups.
