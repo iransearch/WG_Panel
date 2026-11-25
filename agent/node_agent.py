@@ -16,12 +16,14 @@ import hmac
 
 if __package__:
     from .awg_config import (
-        PEER_REMOVAL_BATCH, config_without_peers, new_interface_lines, read_parameters,
+        PEER_REMOVAL_BATCH, activate_created_interface, config_without_peers,
+        new_interface_lines, read_parameters,
         remove_interface_peers, remove_peer_blackholes,
     )
 else:
     from awg_config import (
-        PEER_REMOVAL_BATCH, config_without_peers, new_interface_lines, read_parameters,
+        PEER_REMOVAL_BATCH, activate_created_interface, config_without_peers,
+        new_interface_lines, read_parameters,
         remove_interface_peers, remove_peer_blackholes,
     )
 
@@ -2545,52 +2547,7 @@ def create_interface():
             post_down=post_down,
         )
 
-        up_error = None
-
-        if auto_up:
-            proc = subprocess.run(
-                [
-                    'awg-quick',
-                    'up',
-                    path,
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-
-            if proc.returncode != 0:
-                up_error = (
-                    proc.stderr
-                    or proc.stdout
-                    or ''
-                ).strip() or (
-                    f'awg-quick up {name} failed'
-                )
-
-            else:
-
-                try:
-                    subprocess.run(
-                        [
-                            'systemctl',
-                            'enable',
-                            f'awg-quick@{name}.service',
-                        ],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=10,
-                        check=False,
-                    )
-
-                except Exception:
-                    app.logger.warning(
-                        'Could not enable awg-quick@%s at boot',
-                        name,
-                        exc_info=True,
-                    )
+        up_error, boot_error = activate_created_interface(path, auto_up=auto_up)
 
         meta = _read_iface(path) or {
             'name': name,
@@ -2634,6 +2591,8 @@ def create_interface():
             ok=True,
             interface=meta,
             up_error=up_error,
+            boot_enabled=boot_error is None,
+            boot_error=boot_error,
         ), 201
 
     except FileExistsError:

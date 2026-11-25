@@ -6810,14 +6810,18 @@
           throw err;
         }
 
-        if (j.up_error) {
+        const warnings = [];
+        if (j.up_error) warnings.push(`Could not confirm immediate startup: ${j.up_error}`);
+        if (j.boot_error) warnings.push(`Could not enable startup at boot: ${j.boot_error}`);
+        const message = j.boot_enabled ? "Interface created and enabled at boot" : "Interface created";
+        if (warnings.length) {
           toastSafe(
-            `Interface created, but could not start: ${j.up_error}`,
+            `${message}. ${warnings.join(" ")}`,
             "warn",
             true,
           );
         } else {
-          toastSafe("Interface created", "success");
+          toastSafe(message, "success");
         }
 
         closeIfaceCreateModal();

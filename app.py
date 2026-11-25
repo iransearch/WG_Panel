@@ -30,7 +30,8 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 from config import Config
 from panel_core.database import bundle_database
 from agent.awg_config import (
-    PEER_REMOVAL_BATCH, new_interface_lines, parameter_lines, read_parameters, remove_interface_peers,
+    PEER_REMOVAL_BATCH, activate_created_interface, new_interface_lines, parameter_lines,
+    read_parameters, remove_interface_peers,
     remove_peer_blackholes,
 )
 import time as _geo_time
@@ -15627,7 +15628,7 @@ def node_ifaces(nid):
                 node,
                 '/api/interfaces/create',
                 payload,
-                timeout=30,
+                timeout=40,
             )
 
         except requests.HTTPError as exc:
@@ -22009,52 +22010,7 @@ def create_local_interface():
             detail=str(exc),
         ), 500
 
-    up_error = None
-
-    if auto_up:
-        try:
-            proc = subprocess.run(
-                [
-                    "awg-quick",
-                    "up",
-                    os.path.abspath(conf_path),
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=20,
-                check=False,
-            )
-
-            if proc.returncode != 0:
-                up_error = (
-                    proc.stderr
-                    or proc.stdout
-                    or f"awg-quick up {name} failed"
-                ).strip()
-
-            else:
-                try:
-                    subprocess.run(
-                        [
-                            "systemctl",
-                            "enable",
-                            f"awg-quick@{name}.service",
-                        ],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=10,
-                        check=False,
-                    )
-                except Exception:
-                    current_app.logger.warning(
-                        "Could not enable awg-quick@%s",
-                        name,
-                        exc_info=True,
-                    )
-
-        except Exception as exc:
-            up_error = str(exc)
+    up_error, boot_error = activate_created_interface(conf_path, auto_up=auto_up)
 
     return jsonify(
         ok=True,
@@ -22076,6 +22032,8 @@ def create_local_interface():
         },
 
         up_error=up_error,
+        boot_enabled=boot_error is None,
+        boot_error=boot_error,
     ), 201
 
 def _inject_firewall_rules(

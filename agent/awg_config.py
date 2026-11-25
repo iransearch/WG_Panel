@@ -7,13 +7,51 @@ import re
 import secrets
 import subprocess
 from pathlib import Path
-from tempfile import mkstemp
+from tempfile import TemporaryFile, mkstemp
 
 
 DEFAULT_NODE_INTERFACE = "awg0"
 DEFAULT_NODE_ADDRESS = "10.64.0.1/14"
 LEGACY_NODE_ADDRESS = "10.10.10.1/24"
+_AWG_QUICK_CONF_DIR = Path("/etc/amnezia/amneziawg")
 _PRIVATE_IPV4_NETWORKS = tuple(map(ipaddress.IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")))
+
+
+def activate_created_interface(config_path, *, auto_up):
+    """Register boot startup and optionally bring up a saved interface now."""
+    path = Path(config_path).absolute()
+    unit = f"awg-quick@{path.stem}.service"
+    boot_error = None
+    try:
+        if path.parent.resolve() != _AWG_QUICK_CONF_DIR.resolve():
+            boot_error = f"{unit} expects its configuration in {_AWG_QUICK_CONF_DIR}."
+        else:
+            result = subprocess.run(
+                ["systemctl", "enable", unit], capture_output=True, text=True,
+                errors="replace", timeout=5, check=False,
+            )
+            if result.returncode:
+                boot_error = (result.stderr or result.stdout).strip() or f"Could not enable {unit}."
+    except (OSError, subprocess.SubprocessError) as exc:
+        boot_error = str(exc)
+
+    up_error = None
+    if auto_up:
+        try:
+            # A userspace AWG daemon can keep inherited output descriptors open.
+            with TemporaryFile() as output:
+                result = subprocess.run(
+                    ["awg-quick", "up", str(path)], stdout=output,
+                    stderr=subprocess.STDOUT, timeout=20, check=False,
+                )
+                if result.returncode:
+                    output.seek(0)
+                    up_error = output.read().decode("utf-8", "replace").strip()
+                    up_error = up_error or f"awg-quick up {path.stem} failed."
+        except (OSError, subprocess.SubprocessError) as exc:
+            up_error = str(exc)
+
+    return up_error, boot_error
 
 
 def node_interface_settings(name, address):

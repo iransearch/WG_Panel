@@ -1,16 +1,56 @@
 import base64
 from pathlib import Path
-from subprocess import CalledProcessError, CompletedProcess
+from subprocess import PIPE, CalledProcessError, CompletedProcess, TimeoutExpired
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 from agent.awg_config import (
-    _apply_default_profile, new_interface_lines, parameter_lines, read_parameters, with_default_profile,
+    _apply_default_profile, activate_created_interface, new_interface_lines, parameter_lines,
+    read_parameters, with_default_profile,
 )
 
 
 class AmneziaWGConfigTests(unittest.TestCase):
+    def test_boot_registration_survives_immediate_start_timeout(self):
+        def run(command, **kwargs):
+            if command[:2] == ["awg-quick", "up"]:
+                self.assertNotEqual(kwargs["stdout"], PIPE)
+                raise TimeoutExpired(command, kwargs["timeout"])
+            return CompletedProcess(command, 0)
+
+        with patch("agent.awg_config.subprocess.run", side_effect=run) as command:
+            up_error, boot_error = activate_created_interface(
+                "/etc/amnezia/amneziawg/wg11.conf", auto_up=True,
+            )
+        self.assertIn("timed out", up_error)
+        self.assertIsNone(boot_error)
+        self.assertEqual(command.call_args_list[0].args[0], [
+            "systemctl", "enable", "awg-quick@wg11.service",
+        ])
+
+    def test_boot_registration_can_run_without_immediate_start(self):
+        with patch("agent.awg_config.subprocess.run") as command:
+            command.return_value = CompletedProcess(["systemctl"], 0)
+            self.assertEqual(
+                activate_created_interface("/etc/amnezia/amneziawg/wg11.conf", auto_up=False),
+                (None, None),
+            )
+        self.assertEqual(command.call_count, 1)
+        self.assertEqual(command.call_args.args[0], ["systemctl", "enable", "awg-quick@wg11.service"])
+
+    def test_boot_failure_is_reported_without_preventing_immediate_start(self):
+        with patch("agent.awg_config.subprocess.run") as command:
+            command.side_effect = [
+                CompletedProcess(["systemctl"], 1, "", "Unit is masked"),
+                CompletedProcess(["awg-quick"], 0),
+            ]
+            self.assertEqual(
+                activate_created_interface("/etc/amnezia/amneziawg/wg11.conf", auto_up=True),
+                (None, "Unit is masked"),
+            )
+        self.assertEqual(command.call_args.args[0][:2], ["awg-quick", "up"])
+
     def test_new_interfaces_share_defaults_but_have_distinct_header_keys(self):
         first = dict(line.split(" = ", 1) for line in new_interface_lines())
         second = dict(line.split(" = ", 1) for line in new_interface_lines())

@@ -4939,10 +4939,14 @@ if (scopeEl) {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.detail || j.error || `HTTP ${r.status}`);
 
-      if (j.up_error) {
-        toastSafe(`Interface created, but could not start: ${j.up_error}`, 'warn', true);
+      const warnings = [];
+      if (j.up_error) warnings.push(`Could not confirm immediate startup: ${j.up_error}`);
+      if (j.boot_error) warnings.push(`Could not enable startup at boot: ${j.boot_error}`);
+      const message = j.boot_enabled ? 'Interface created and enabled at boot' : 'Interface created';
+      if (warnings.length) {
+        toastSafe(`${message}. ${warnings.join(' ')}`, 'warn', true);
       } else {
-        toastSafe('Interface created', 'success');
+        toastSafe(message, 'success');
       }
 
       closeIfaceCreateModal();
